@@ -1,0 +1,2295 @@
+---
+title: 'Chapter 3: L2 accommodation and gesture'
+author: "Valentijn Prové"
+date: "2024-01-10"
+output: html_document
+---
+
+#preparations (ALWAYS RUN FIRST)
+##packages
+```{r packages, message=FALSE, warning=FALSE}
+library(elan)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(readbulk)
+library(kza) #smoothing filter
+library(DescTools) #overlaps
+library(data.table) #overlaps
+library(ggplot2) #plotting
+library(plotly) #plotting
+library(ggbeeswarm) #plotting
+library(ggrepel) #pie chart
+library(RColorBrewer) # colors
+library(wesanderson)
+library(car) #regression
+library(lmerTest) #regression
+library(lme4) #regression
+library(effects) #regression
+library(pracma) #for overlaps
+```
+
+##values: directories, colors...
+```{r set directories}
+setwd("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/03_gesture")
+
+FC_elan_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/elan/"
+FC_openpose_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/openpose/"
+
+PD_elan_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/PD/elan/"
+PD_openpose_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/PD/openpose/"
+```
+
+```{r color palettes}
+pal_combi <- c(
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  "#FAC898", #icon + abstract (lighter shade of orange)
+  "#F98400", #icon + concrete (orange)
+  "#5BBCD6", #metaphor
+  "#EE82EE", #metaphor + abstract (violet)
+  "#4B0082", #metaphor + concrete (indigo)
+  "#ff8787", #abstract
+  "#FF0000", #concrete
+  "#bdbab7") #emblem
+
+pal_single <- c(
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  "#5BBCD6", #metaphor
+  "#ff8787", #abstract
+  "#FF0000", #concrete
+  "#bdbab7") #emblem
+```
+
+```{r define key to identify a specific gesture token in FC}
+keys <- c("ID_participant", "ID_partner", "ID_gesture") #unique identifier for gesture by participant with partner
+```
+
+##functions
+```{r define custom functions}
+speedXY.it <- function(x, y, time_millisecond)
+{
+  speed <- c(0, sqrt( rowSums( cbind(diff(x)^2, diff(y)^2)) ))
+  speed <<- speed/(c(0, diff(time_millisecond)/1000)) #provides a vector with velocity
+}
+
+load.event <- function(time_ms_rec, g_d, column)
+{
+  output <- character(length = length(time_ms_rec))
+  output <- NA
+  for(i in g_d[,1])
+  {
+    output <- ifelse((time_ms_rec >= i & time_ms_rec <= g_d[,2][g_d[,1] == i]), as.character(g_d[,column][g_d[,1]==i]), output)
+  }
+  return(output) #provides a vector with the length of the time series with annotations
+}
+
+select_size <- function(row) {
+  if (row[["hand"]] == "both") {
+    max(row[["size.rh"]], row[["size.lh"]]) %>% return()
+  } else if (row[["hand"]] == "right") {
+    row[["size.rh"]] %>% return()
+  } else if (row[["hand"]] == "left") {
+    row[["size.lh"]] %>% return()
+  }
+}
+
+select_traj <- function(row) {
+  if (row[["hand"]] == "both") {
+    max(row[["traj.rh"]], row[["traj.lh"]]) %>% return()
+  } else if (row[["hand"]] == "right") {
+    row[["traj.rh"]] %>% return()
+  } else if (row[["hand"]] == "left") {
+    row[["traj.lh"]] %>% return()
+  }
+}
+
+select_ampl_x <- function(row) {
+  if (row[["hand"]] == "both") {
+    max(row[["ampl_x.rh"]], row[["ampl_x.lh"]]) %>% return()
+  } else if (row[["hand"]] == "right") {
+    row[["ampl_x.rh"]] %>% return()
+  } else if (row[["hand"]] == "left") {
+    row[["ampl_x.lh"]] %>% return()
+  }
+}
+
+select_ampl_y <- function(row) {
+  if (row[["hand"]] == "both") {
+    max(row[["ampl_y.rh"]], row[["ampl_y.lh"]]) %>% return()
+  } else if (row[["hand"]] == "right") {
+    row[["ampl_y.rh"]] %>% return()
+  } else if (row[["hand"]] == "left") {
+    row[["ampl_y.lh"]] %>% return()
+  }
+}
+
+select_velo <- function(row) {
+  if (row[["hand"]] == "both") {
+    max(row[["peak_velo.rh"]], row[["peak_velo.lh"]]) %>% return()
+  } else if (row[["hand"]] == "right") {
+    row[["peak_velo.rh"]] %>% return()
+  } else if (row[["hand"]] == "left") {
+    row[["peak_velo.lh"]] %>% return()
+  }
+}
+
+generate_sequence <- function(num) {
+  c((num - 2):(num + 2))
+}
+
+label_sequences <- function(x) {
+  # Identify the start and end indices of each numeric sequence
+  start_indices <- which(!is.na(x) & is.na(c(NA, x[-length(x)])))
+  end_indices <- which(!is.na(x) & is.na(c(x[-1], NA)))
+  
+  # Ensure there are equal numbers of start and end indices
+  if (length(start_indices) != length(end_indices)) {
+    stop("Invalid input: uneven start and end indices.")
+  }
+  
+  # Initialize label vector
+  labels <- rep(NA, length(x))
+  
+  # Counter for peak labels
+  peak_counter <- 1
+  
+  # Label each numeric sequence
+  for (i in seq_along(start_indices)) {
+    labels[start_indices[i]:end_indices[i]] <- paste("peak_", peak_counter, sep = "")
+    peak_counter <- peak_counter + 1
+  }
+  
+  return(labels)
+}
+
+replace_last_char <- function(string) {
+  last_char <- substr(string, nchar(string), nchar(string))
+  if (last_char == "a") {
+    new_last_char <- "b"
+  } else if (last_char == "b") {
+    new_last_char <- "a"
+  } else {
+    new_last_char <- last_char
+  }
+  return(paste0(substr(string, 1, nchar(string) - 1), new_last_char))
+}
+
+```
+
+#PD: transform annotations
+##read participant info
+```{r}
+PD_participants <- read.csv("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/PD/participant_info.csv", sep = ";") %>%
+  mutate(ID_participant = gsub("_run[1-2]", "\\1", filename),
+         ID_interaction = gsub("[a-z]*[1-9]*[a-b]_run", "\\1", filename))
+
+PD_participants %>%
+  distinct(ID_participant, .keep_all = T) %>%
+  group_by(gender) %>%
+  summarise(n = n())
+```
+
+##read ELAN files
+```{r read PD elan files, eval=FALSE, include=FALSE}
+#list all the files in the elan directory
+PD_elan_files <- list.files(PD_elan_dir, pattern = ".eaf$")
+#read into table where every row corresponds to an annotation
+PD_all_ann <- efileAnnotations(paste0(PD_elan_dir, PD_elan_files))
+#subset reference annotations (not time aligned)
+PD_all_ann_REF <- subset(PD_all_ann, atype == "REF")
+PD_all_ann_REF$REF_join <- PD_all_ann_REF$ANNOTATION_REF #key for joining based on reference ID
+#subset annotations based on time intervals
+PD_all_ann_ANN <- subset(PD_all_ann, atype == "ANN")
+PD_all_ann_ANN$REF_join <- PD_all_ann_ANN$ANNOTATION_ID #key for joining based on annotation ID
+```
+
+##extract speech data
+```{r extract PD speech data, eval=FALSE, include=FALSE}
+#summarize basic speech data per individual participant
+PD_speech <- PD_all_ann %>%
+  filter(grepl("s[1-2]", TIER_ID)) %>%
+  mutate(file = str_extract(filename, "([a-zA-Z0-9]+)_run\\d+"),
+         IP_ID = paste(file, t0, t1, sep = ("_")),
+         role = if_else(TIER_ID=="s1", "speaker", "listener"),
+         clarity = if_else(grepl("(\\@|\\(.*\\))", VALUE, perl=T), "unclear", "ok"), #unclear if laughter or not transcribed
+         speech_clean = gsub("(\\@|\\(.*\\))", "\\1", VALUE, perl=T),
+         speech_clean = gsub("@", "\\1", VALUE, perl=T),#delete laughter/meta-descriptions/unclear words) 
+         speech_clean = gsub("euhm *", "\\1", speech_clean), #replace euhm for syllable count as 1
+         word_count = lengths(strsplit(speech_clean, "\\W+"))) %>% #KAN IK MISSCHIEN BETER IN SPACY DOEN??
+  select(-t0.id, -t1.id, -atype, -ANNOTATION_REF, -ANNOTATION_ID, -TIER_ID) %>%
+  mutate(filename = file) %>%
+  select(-file)
+
+write_tsv(PD_speech, "PD_speech.tsv")
+
+PD_speech_summary <- PD_speech %>%
+  rename(filename = file) %>%
+  group_by(filename) %>%
+  summarise(s_speaker_dur_sec = sum(t1[role=="speaker"]-t0[role=="speaker"])/1000,
+            s_listener_dur_sec = sum(t1[role=="listener"]-t0[role=="listener"])/1000,
+            s_interaction_dur_sec = (max(t1)-min(t0))/1000) #total speech contribution in seconds
+
+
+
+```
+
+##extract pause data
+```{r}
+PD_pauses <- PD_all_ann %>%
+  filter(grepl("pauses", TIER_ID)) %>%
+  mutate(file = str_extract(filename, "([a-zA-Z0-9]+)_run\\d+"),
+         pause_ID = paste(file, t0, t1, sep = ("_"))) %>%
+  select(-t0.id, -t1.id, -atype, -ANNOTATION_REF, -ANNOTATION_ID, -TIER_ID) %>%
+  mutate(filename = file) %>%
+  select(-file)
+
+write_tsv(PD_pauses, "PD_pauses.tsv")
+```
+
+##extract speech data
+```{r write PD_gestures_nokine.tsv; extract gesture data from annotations}
+#create a table where every row corresponds to one rating on one of the semantic dimension tiers
+PD_gestures <- data.frame()
+for (i in unique(PD_all_ann_REF$filename)) {
+  ref <- subset(PD_all_ann_REF, filename == i)
+  ann <- subset(PD_all_ann_ANN, filename == i & grepl('Semantic', TIER_ID))
+  m <- merge(ann, ref, by = "REF_join")
+  PD_gestures <- rbind.data.frame(PD_gestures, m)
+  ref <- NULL
+  ann <- NULL
+  m <- NULL
+}
+
+#group ratings per gesture (unit) token
+PD_gestures <- PD_gestures %>%
+  mutate(filename = str_extract(filename.x, "([a-zA-Z0-9]+)_run\\d+")) %>%
+  group_by(filename, VALUE.x) %>% #"VALUE.x" is the ID from Semantic_Dimension_ID ("sem_1", "sem_2" etc.)
+  #summarise ratings as binary decisions per token
+  summarise(nonref = if_else(sum(str_detect(VALUE.y, 'non-referential')) > 0, "yes", "no"),
+            icon = if_else(sum(str_detect(VALUE.y, 'iconic')) > 0, "yes", "no"),
+            metaph = if_else(sum(str_detect(VALUE.y, 'metaphoric')) > 0, "yes", "no"),
+            deixis = if_else(sum(str_detect(VALUE.y, 'deixis')) > 0, "yes", "no"),
+            deixis = if_else(sum(str_detect(VALUE.y, 'abstract')) > 0, "abstract", deixis),
+            deixis = if_else(sum(str_detect(VALUE.y, 'concrete')) > 0, "concrete", deixis),
+            conv = if_else(sum(str_detect(VALUE.y, 'conventional')) > 0, "yes", "no"),
+            hand = VALUE.y[grepl("hand", TIER_ID.y)],
+            t0 = as.numeric(unique(t0.x)), #t0 = start time in msec
+            t1 = as.numeric(unique(t1.x))) %>% #T1 = end time in msec
+  select(-VALUE.x, ID_gesture = VALUE.x) %>%
+  relocate(t0, .before = filename) %>%
+  relocate(t1, .after = t0) %>%
+  relocate(ID_gesture, .after = t1) %>%
+  arrange(filename, as.numeric(gsub("sem_", "\\1", ID_gesture))) %>%
+  ungroup() %>%
+  group_by(filename) %>%
+  #specify whether the unit is part (as first, middle or last position) of a phrase containing 2 or more units or not
+  #first unit of phrase if lag with next unit is 300 msec or less
+  #last unit of phrase if lag with previous unit...
+  #middle unit of phrase if lag with both next and previous unit...
+  #NA means that the unit is not part of a phrase unless it is the last unit of the measurement
+  mutate(phrase_position = if_else(lead(t0)-t1 <= 300, "first", "no" ),
+         phrase_position = if_else(t0-lag(t1) <= 300, "last", phrase_position ),
+         phrase_position = if_else(lead(t0)-t1 <= 300 & t0-lag(t1) <= 300, "middle", phrase_position),
+         phrase_position = if_else(is.na(t0-lag(t1)), "no", phrase_position),
+         phrase_position = if_else(is.na(lead(t0)-t1 ), "no", phrase_position),
+         phrase_position = if_else(t0-lag(t1) <= 300 & is.na(lead(t0)-t1), "last", phrase_position),
+         phrase_position = if_else(is.na(phrase_position), "no", phrase_position)) %>%
+  #add ID per phrase
+  mutate(ID_phrase = paste0("phrase_", cumsum(phrase_position %in% c("no", "first")))) %>%
+  relocate(ID_phrase, .after = ID_gesture)
+#TO DO: first gesture in file that is part of phrase should be 'first'!!!
+write_tsv(PD_gestures, "PD_gestures_nokine.tsv")
+```
+
+##extract kinematic data
+```{r write PD_ts_prepared.csv or prepare openpose time series, eval=FALSE, include=FALSE}
+PD_ts <- read_bulk(PD_openpose_dir)
+
+PD_ts_prep <- PD_ts %>% 
+  mutate(filename = gsub(".mp4_body25.csv", "\\1", File)) %>%
+  group_by(filename) %>%
+  summarise(frame = row_number(),
+            time_msec = (round(seq(1000/(25), (max(frame)*(1000/25)), by=1000/25))), #frame rate = 25 fps
+            #center Wrist (4,7) to MidHip (8) and scale according to distance to Neck (1), 'bs' for 'body scale'
+            #=> new coordinate system: MidHip becomes '0' and Neck becomes '1
+            #apply kz smoothing
+            x4 = kz((x4-x8)/(y8-y1), m = 5, k = 3),
+            y4 = kz(-1*((y4-y8)/(y8-y1)), m = 5, k = 3),
+            x7 = kz((x7-x8)/(y8-y1), m = 5, k = 3),
+            y7 = kz(-1*((y7-y8)/(y8-y1)), m = 5, k = 3),
+            #calculate frame-wise size
+            xy4 = abs(x4*y4),
+            xy7 = abs(x7*y7),
+            #calculate velocity of left and right wrist (kz smooth)
+            xy4_velo = speedXY.it(x4, y4, time_msec),
+            xy7_velo = speedXY.it(x7, y7, time_msec),
+            xy4_velo = c(0, kz(xy4_velo[is.finite(xy4_velo)], m = 5, k = 3)),
+            xy7_velo = c(0, kz(xy7_velo[is.finite(xy7_velo)], m = 5, k = 3)))
+  
+write_tsv(PD_ts_prep, "PD_ts_preprared.tsv")
+```
+
+```{r write PD_ts_gestures.csv or add gesture ID's and participant info to prepared time series }
+PD_ts_prep <- read_tsv("PD_ts_preprared.tsv")
+PD_ts_gestures <- data.frame()
+for (i in unique(PD_gestures$filename)) {
+  ts.file <- as.data.frame(subset(PD_ts_prep, filename == i)) #important that we work with 'data.frame' format for 'load.event'
+  PD_gestures.file <- as.data.frame(subset(PD_gestures, filename == i)) #
+  print(i)
+  ts.file$ID_gesture <- load.event(ts.file$time_msec, PD_gestures.file , 3) 
+  PD_ts_gestures <- rbind.data.frame(PD_ts_gestures, ts.file)
+}
+#save annotated time series to disk
+PD_ts_gestures <- subset(PD_ts_gestures, !is.na(ID_gesture))
+write_tsv(PD_ts_gestures, "PD_ts_gestures.tsv")
+```
+
+##add kinematic measures to gestures
+```{r calcuate kinematic measures per gesture}
+PD_ts_gestures <- read_tsv("PD_ts_gestures.tsv")
+size_velo <- PD_ts_gestures %>% 
+  group_by(filename, ID_gesture) %>%
+  summarise(size.rh = ((max(x4)-min(x4))*(max(y4)-min(y4))) %>% round(digits = 3),
+            size.lh = ((max(x7)-min(x7))*(max(y7)-min(y7))) %>% round(digits = 3),
+            traj.rh = sum(c(0, sqrt( rowSums( cbind(diff(x4)^2, diff(y4)^2)) ))) %>% round(digits = 3),
+            traj.lh = sum(c(0, sqrt( rowSums( cbind(diff(x7)^2, diff(y7)^2)) ))) %>% round(digits = 3),
+            ampl_y.rh = max(y4) %>% round(digits = 3),
+            ampl_y.lh = max(y7) %>% round(digits = 3),
+            ampl_x.rh = max(abs(x4)) %>% round(digits = 3),
+            ampl_x.lh = max(abs(x7)) %>% round(digits = 3),
+            peak_velo.rh = max(xy4_velo) %>% round(digits = 3),
+            peak_velo.lh = max(xy7_velo) %>% round(digits = 3))
+
+apex.rh <- PD_ts_gestures %>% 
+  group_by(filename, ID_gesture) %>%
+  filter(xy4 == max(xy4)) %>%
+  summarise(apex.rh = first(time_msec))
+
+apex.lh <- PD_ts_gestures %>% 
+  group_by(filename, ID_gesture) %>%
+  filter(xy7 == max(xy7)) %>%
+  summarise(apex.lh = first(time_msec))
+```
+
+```{r update PD_gestures: join kinematic measures and gesture info}
+PD_gestures <- read_tsv("PD_gestures_nokine.tsv")
+kinematics <- inner_join(size_velo, apex.rh,by=c("filename", "ID_gesture")) %>%
+  inner_join(apex.lh,by=c("filename", "ID_gesture")) %>%
+  inner_join(PD_gestures, by=c("filename", "ID_gesture"))
+
+kinematics$size = apply(kinematics , 1, select_size)
+kinematics$traj = apply(kinematics , 1, select_traj)
+kinematics$ampl_x = apply(kinematics , 1, select_ampl_x)
+kinematics$ampl_y = apply(kinematics , 1, select_ampl_y)
+kinematics$peak_velo = apply(kinematics , 1, select_velo)
+
+kinematics <- kinematics %>%
+  relocate(size, .after = size.lh) %>%
+  relocate(traj, .after = traj.lh) %>%
+  relocate(ampl_x, .after = ampl_x.lh) %>%
+  relocate(ampl_y, .after = ampl_y.lh) %>%
+  relocate(peak_velo, .after = peak_velo.lh)
+
+#update the "FC_gestures" data frame
+PD_gestures <- kinematics %>%
+  relocate(t0, .after = ID_gesture) %>%
+  relocate(t1, .after = t0)
+write_tsv(PD_gestures, "PD_gestures_kine.tsv")
+```
+## add participant info to gesture data
+```{r update PD_gestures: participant info}
+PD_gestures <- read_tsv("PD_gestures_kine.tsv") %>%
+  right_join(PD_participants, by = "filename") %>%
+  mutate(ID_partner = sapply(ID_participant, replace_last_char)) %>%
+  relocate(ID_partner, .after = ID_participant)
+#save to disk
+write_tsv(PD_gestures, "PD_gestures_final.tsv")
+PD_gestures <- read_tsv("PD_gestures_final.tsv")
+```
+
+##pause-gesture overlaps
+```{r}
+PD_gestures <- read_tsv("PD_gestures_final.tsv") %>%
+  filter(!is.na(ID_gesture))
+PD_pauses <- read_tsv("PD_pauses.tsv")
+
+#find all overlaps between gesture and pause annotations, one row per overlap
+overlap <- data.frame()
+for (i in unique(PD_gestures$filename)) {
+  gestures_in_file <- setkey(setDT(subset(PD_gestures, filename==i)), t0, t1)
+  pauses_in_file <- setkey(setDT(subset(PD_pauses, filename==i)), t0, t1)
+  output <- foverlaps(gestures_in_file, pauses_in_file)
+  overlap <- rbind.data.frame(overlap, output)
+}
+
+#restructure columns and remove pauses of less than 200 msec
+PD_pauses_overlap <- overlap %>%
+  select(-filename, -pause_ID) %>%
+  rename(pause_duration = VALUE,
+         filename = i.filename,
+         pause_t0 = t0,
+         pause_t1 = t1,
+         t0 = i.t0,
+         t1 = i.t1) %>%
+  mutate(pause_duration = if_else(pause_duration < 200, NA, pause_duration),
+         pause_t0 = if_else(is.na(pause_duration), NA, pause_t0),
+         pause_t1 = if_else(is.na(pause_duration), NA, pause_t1),
+         pause = if_else(!is.na(pause_duration), 1, 0)) %>%
+  relocate(pause, .before = pause_duration)
+
+write_tsv(PD_pauses_overlap, "PD_pauses_overlap.tsv")
+```
+
+#PD: summarize per video file
+```{r}
+PD_gestures_summary <- PD_gestures %>%
+  group_by(filename, item, gender, language, ID_participant, ID_partner, ID_interaction, condition) %>%
+  summarise(g_unit_freq = if_else(length(ID_gesture[is.na(ID_gesture)])!= 0, 0, n()), #total number of gesture units
+            g_phrase_freq = if_else(length(ID_gesture[is.na(ID_gesture)])!= 0, 0, length(unique(ID_phrase))),
+            g_phrase_middle = if_else(length(ID_gesture[is.na(ID_gesture)])!= 0, 0, length(phrase_position[phrase_position=="middle"])),
+            gp_nonref = round(length(nonref[nonref=="yes"])/g_unit_freq, digits = 2), #proportion (divided by total n  of units)
+            gp_icon = round(length(icon[icon=="yes"])/g_unit_freq, digits = 2),
+            gp_metaph = round(length(metaph[metaph=="yes"])/g_unit_freq, digits = 2),
+            gp_deixis_abstr = round(length(deixis[deixis=="abstract"])/g_unit_freq, digits = 2),
+            gp_deixis_conc = round(length(deixis[deixis=="concrete"])/g_unit_freq, digits = 2),
+            gp_conv = round(length(conv[conv=="yes"])/g_unit_freq, digits = 2),
+            g_dur_total_sec = if_else(length(ID_gesture[is.na(ID_gesture)])!= 0, 0, sum(t1-t0)/1000), #total gesture time
+            g_units_per_phrase = round(g_unit_freq/g_phrase_freq, digits = 2),
+            g_prop_units_middle = round(g_phrase_middle/g_unit_freq, digits = 2))
+
+is.na(PD_gestures_summary) <- sapply(PD_gestures_summary, is.infinite)
+is.na(PD_gestures_summary) <- sapply(PD_gestures_summary, is.nan)
+write_tsv(PD_gestures_summary, "PD_gestures_summary.tsv")
+PD_gestures_summary <- read_tsv("PD_gestures_summary.tsv")
+```
+
+```{r merge gesture and speech summary}
+PD_speech_summary <- read_tsv("PD_speech_summary.tsv")
+PD_multimod_summary <- PD_gestures_summary %>%
+  inner_join(PD_speech_summary, by = "filename") %>%
+  mutate(g_prop_time = round(g_dur_total_sec/s_speaker_dur_sec, digits = 2))
+write_tsv(PD_multimod_summary, "PD_multimod_summary.tsv")
+PD_multimod_summary <- read_tsv("PD_multimod_summary.tsv")
+```
+
+#FC: transform annotations
+##read participant info
+```{r FC: read participant info, message=FALSE, warning=FALSE}
+FC_participants <- read.csv("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/participant_info.csv", sep=";") %>%
+  summarise(ID_participant = toupper(participant),
+            label_participant = if_else(proficiency == "ns", "L1", "L2"))
+
+read.csv("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/participant_info.csv", sep=";") %>%
+  group_by(gender) %>%
+  summarise(gender = n())
+
+
+
+FC_partners<- read.csv("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/participant_info.csv", sep=";") %>%
+  summarise(ID_partner = toupper(participant),
+            label_partner = if_else(proficiency == "ns", "L1", "L2"))
+```
+
+##read ELAN files
+```{r read FC elan files, eval=FALSE, include=FALSE}
+#list all the files in the elan directory
+FC_elan_files <- list.files(FC_elan_dir, pattern = ".eaf$")
+#read into table where every row corresponds to an annotation
+FC_all_ann <- efileAnnotations(paste0(FC_elan_dir, FC_elan_files))
+#subset reference annotations (not time aligned)
+FC_all_ann_REF <- subset(FC_all_ann, atype == "REF")
+FC_all_ann_REF$REF_join <- FC_all_ann_REF$ANNOTATION_REF #key for joining based on reference ID
+#subset annotations based on time intervals
+FC_all_ann_ANN <- subset(FC_all_ann, atype == "ANN")
+FC_all_ann_ANN$REF_join <- FC_all_ann_ANN$ANNOTATION_ID #key for joining based on annotation ID
+
+#trim the data set (we only analyse annotations under 4'30") and add ID's
+FC_all_ann_trim <- FC_all_ann_ANN %>%
+  filter(t0 < 270000) %>%
+  mutate(ID_group = as.character(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = paste0(ID_group, "_", substring(TIER_ID, 0, 1)),
+         ID_partner = paste0(ID_group, "_",
+                             if_else(grepl("ab.eaf", filename) & grepl("A", ID_participant), "B", ""), 
+                             if_else(grepl("ab.eaf", filename) & grepl("B", ID_participant), "A", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("B", ID_participant), "C", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("C", ID_participant), "B", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("A", ID_participant), "C", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("C", ID_participant), "A", "")),
+         ID_dyad = as.character(toupper(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]_[a-c][a-c]"))))
+```
+
+##extract speech data
+```{r}
+#summarize basic speech data per individual participant
+speech_summary <- FC_all_ann_trim %>%
+  filter(grepl("(A|B|C)$", TIER_ID)) %>%
+  group_by(ID_group, ID_participant, ID_partner, ID_dyad) %>% 
+  summarise(s_dur_total_sec = sum(t1-t0)/1000, #total speech contribution in seconds
+            s_dur_prop = round(s_dur_total_sec/270, digits = 2)) #speech proportional to total interaction time
+#TO DO: clean speech data (@ ect.) and add number of words
+
+write_tsv(speech_summary, "FC_speech_summary.tsv")
+```
+
+## extract pause data
+```{r write FC_pauses.tsv}
+FC_random_ID <- FC_all_ann_trim %>%
+  filter(grepl("random5_ID", TIER_ID)) %>%
+  select(ID_group, ID_participant, ID_partner, ID_dyad, VALUE, t0, t1)
+
+FC_random_pause <- FC_all_ann_trim %>%
+  filter(grepl("random5_transcr", TIER_ID), grepl("unfilled", VALUE)) %>%
+  select(VALUE, ID_participant, ID_partner, t0, t1) %>%
+  rename(pause_t0 = t0,
+         pause_t1 = t1)
+
+overlap <- data.frame()
+for (i in unique(paste0(FC_random_ID$ID_participant, FC_random_ID$ID_partner))) {
+  ID_i <- setkey(setDT(subset(FC_random_ID, paste0(FC_random_ID$ID_participant, FC_random_ID$ID_partner)==i)), t0, t1)
+  pause_i <- setkey(setDT(subset(FC_random_pause, paste0(FC_random_pause$ID_participant, FC_random_pause$ID_partner)==i)), pause_t0, pause_t1)
+  output <- foverlaps(ID_i, pause_i)
+  overlap <- rbind.data.frame(overlap, output)
+}
+
+FC_pauses <- overlap %>%
+  select(-ID_participant, -ID_partner) %>%
+  rename(pause = VALUE,
+         ID_gesture = i.VALUE,
+         ID_participant = i.ID_participant,
+         ID_partner = i.ID_partner) %>%
+  mutate(pause = if_else(is.na(pause), "no", pause))
+
+write_tsv(FC_pauses, "FC_pauses.tsv")
+```
+
+##extract deixis suppl data
+```{r write deixis.tsv; extract detailed deixis annotations}
+FC_all_ann_trim_deixis <- FC_all_ann_trim[grep("(DEIXIS|deixis)", FC_all_ann_trim$TIER_ID),]
+#create a table where every row corresponds to one rating on one of the DEIXIS tiers, same procedure as other gesture annotations
+deixis <- data.frame()
+for (i in unique(FC_all_ann_trim_deixis$filename)) {
+  ref <- subset(FC_all_ann_REF, filename == i)
+  ann <- subset(FC_all_ann_trim_deixis, filename == i & grepl("deixis", TIER_ID))
+  situ <- subset(FC_all_ann_trim_deixis, filename == i & grepl("DEIXIS_scenario", TIER_ID))
+  ann_situ <- data.frame()
+  #new loop to search for overlaps on the 'scenario' tier (corresponds to conversational 'topic')
+  for (t0_i in ann$t0) {
+    ann_t <- subset(ann, t0 == t0_i)
+    t1_i = ann_t$t1
+    situ_t <- subset(situ, t0 <= t0_i & t1 >= t1_i)
+    ann_t$situ <- ifelse(length(situ_t$VALUE) == 0, "other", situ_t$VALUE)
+    ann_situ <- rbind.data.frame(ann_situ, ann_t)
+    ann_t <- NULL
+    situ_t <- NULL
+  }
+  m <- merge(ann_situ, ref, by = "REF_join")
+  deixis <- rbind.data.frame(deixis, m)
+  ref <- NULL
+  ann <- NULL
+  m <- NULL
+  situ <- NULL
+  ann_situ <- NULL
+}
+
+#summarize ratings per gesture token
+deixis <- deixis %>%
+  select(-VALUE.x, ID_gesture = VALUE.x) %>%
+  group_by(ID_group, ID_participant, ID_partner, ID_dyad, t0.x, t1.x) %>%
+  summarise(annot = paste0(VALUE.y, collapse = "-")) %>%
+  mutate(status = if_else(grepl("new", annot), "new", "given"),
+         status = as.factor(if_else(grepl("acc", annot), "accessible", status)),
+         sem1 = if_else(grepl("geo", annot), "geo", "none"),
+         sem1 = if_else(grepl("envir", annot), "envir", sem1),
+         sem1 = if_else(grepl("etym", annot), "etym", sem1),
+         sem1 = as.factor(if_else(grepl("time", annot), "time", sem1)),
+         sem2 = if_else(grepl("shift", annot), "shift", "none"),
+         sem2 = as.factor(if_else(grepl("contrast", annot), "contrast", sem2))) %>%
+  rename(t0 = t0.x ,  t1 = t1.x)
+
+write_tsv(deixis, "FC_deixis.tsv")
+```
+
+##extract gesture data
+```{r write FC_gestures.tsv; extract gesture data from annotations, message=FALSE, warning=FALSE}
+#create a table where every row corresponds to one rating on one of the semantic dimension tiers
+FC_gestures <- data.frame()
+for (i in unique(FC_all_ann_REF$filename)) {
+  ref <- subset(FC_all_ann_REF, filename == i)
+  ann <- subset(FC_all_ann_trim, filename == i & grepl('Semantic', TIER_ID))
+  m <- merge(ann, ref, by = "REF_join")
+  FC_gestures <- rbind.data.frame(FC_gestures, m)
+  ref <- NULL
+  ann <- NULL
+  m <- NULL
+}
+
+#group ratings per gesture (unit) token
+FC_gestures <- FC_gestures %>%
+  group_by(ID_group, ID_participant, ID_partner, VALUE.x) %>% #"VALUE.x" is the ID from Semantic_Dimension_ID ("sem_1", "sem_2" etc.)
+  #summarise ratings as binary decisions per token
+  summarise(nonref = if_else(sum(str_detect(VALUE.y, 'non-referential')) > 0, "yes", "no"),
+            icon = if_else(sum(str_detect(VALUE.y, 'iconic')) > 0, "yes", "no"),
+            metaph = if_else(sum(str_detect(VALUE.y, 'metaphoric')) > 0, "yes", "no"),
+            deixis = if_else(sum(str_detect(VALUE.y, 'deixis')) > 0, "yes", "no"),
+            deixis = if_else(sum(str_detect(VALUE.y, 'abstract')) > 0, "abstract", deixis),
+            deixis = if_else(sum(str_detect(VALUE.y, 'concrete')) > 0, "concrete", deixis),
+            conv = if_else(sum(str_detect(VALUE.y, 'conventional')) > 0, "yes", "no"),
+            t0 = as.numeric(unique(t0.x)), #t0 = start time in msec
+            t1 = as.numeric(unique(t1.x))) %>% #T1 = end time in msec
+  select(-VALUE.x, ID_gesture = VALUE.x)
+#add information about handedness  
+FC_gestures <- FC_all_ann_trim %>%
+  filter(grepl("hand", TIER_ID)) %>%
+  group_by(ID_group, ID_participant, ID_partner, ID_dyad) %>% 
+  summarise(hand = VALUE[grepl("hand", TIER_ID)],
+            t0 = as.numeric(unique(t0)),
+            t1 = as.numeric(unique(t1))) %>%
+  right_join(FC_gestures, by = c("ID_group", "ID_participant", "ID_partner", "t0", "t1")) %>%
+  relocate(t0, .before = ID_group) %>%
+  relocate(t1, .after = t0) %>%
+  relocate(ID_gesture, .after = t1) %>%
+  #sort according to occurrence in time
+  arrange(as.numeric(gsub("segm_", "\\1", ID_gesture))) %>%
+  #specify whether the unit is part (as first, middle or last position) of a phrase containing 2 or more units or not
+  #first unit of phrase if lag with next unit is 300 msec or less
+  #last unit of phrase if lag with previous unit...
+  #middle unit of phrase if lag with both next and previous unit...
+  #NA means that the unit is not part of a phrase unless it is the last unit of the measurement
+  mutate(phrase_position = if_else(lead(t0)-t1 <= 300, "first", "no" ),
+         phrase_position = if_else(t0-lag(t1) <= 300, "last", phrase_position ),
+         phrase_position = if_else(lead(t0)-t1 <= 300 & t0-lag(t1) <= 300, "middle", phrase_position ),
+         phrase_position = if_else(is.na(t0-lag(t1)), "no", phrase_position),
+         phrase_position = if_else(is.na(lead(t0)-t1 ), "no", phrase_position),
+         phrase_position = if_else(t0-lag(t1) <= 300 & is.na(lead(t0)-t1), "last", phrase_position)) %>%
+  #add ID per phrase
+  mutate(phrase_ID = paste0("phrase_", cumsum(phrase_position %in% c("no", "first"))))
+
+#correct typos
+FC_gestures$hand <- as.factor(FC_gestures$hand)
+levels(FC_gestures$hand) <- c("both", "left", "left", "right", "right")
+FC_gestures[which(is.na(FC_gestures$hand)),]
+write_tsv(FC_gestures, "FC_gestures_nokine.tsv")
+```
+
+##extract kinematic data
+```{r write FC_ts_prepared.csv or prepare openpose time series, eval=FALSE, include=FALSE}
+ts <- read_bulk(FC_openpose_dir)
+
+ts_prep <- ts %>% 
+  mutate(ID_group = as.character(str_extract_all(File, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")), #add ID columns
+         ID_participant = toupper(paste0(ID_group, "_", substring(File, 12, 12))),
+         ID_partner = paste0(ID_group, "_",
+                             if_else(grepl("1a", File) & grepl("A", ID_participant), "B", ""), 
+                             if_else(grepl("1b", File) & grepl("B", ID_participant), "A", ""),
+                             if_else(grepl("2b", File) & grepl("B", ID_participant), "C", ""),
+                             if_else(grepl("1c", File) & grepl("C", ID_participant), "B", ""),
+                             if_else(grepl("2a", File) & grepl("A", ID_participant), "C", ""),
+                             if_else(grepl("2c", File) & grepl("C", ID_participant), "A", "")),
+         ID_dyad = paste0(ID_group, "_",
+                             if_else(grepl("1a", File), "AB", ""), 
+                             if_else(grepl("1b", File), "AB", ""),
+                             if_else(grepl("2b", File), "CB", ""),
+                             if_else(grepl("1c", File), "CB", ""),
+                             if_else(grepl("2a", File), "CA", ""),
+                             if_else(grepl("2c", File), "CA", ""))) %>%
+  group_by(ID_dyad, ID_participant, ID_partner) %>%
+  summarise(frame = row_number(),
+            time_msec = (round(seq(1000/(50), (max(frame)*(1000/50)), by=1000/50))),
+            #center Wrist (4,7) to MidHip (8) and scale according to distance to Neck (1), 'bs' for 'body scale'
+            #=> new coordinate system: MidHip becomes '0' and Neck becomes '1
+            #apply kz smoothing
+            x4 = kz((x4-x8)/(y8-y1), m = 5, k = 3),
+            y4 = kz(-1*((y4-y8)/(y8-y1)), m = 5, k = 3),
+            x7 = kz((x7-x8)/(y8-y1), m = 5, k = 3),
+            y7 = kz(-1*((y7-y8)/(y8-y1)), m = 5, k = 3),
+            #calculate frame-wise size
+            xy4 = abs(x4*y4),
+            xy7 = abs(x7*y7),
+            #calculate velocity of left and right wrist (kz smooth)
+            xy4_velo = speedXY.it(x4, y4, time_msec),
+            xy7_velo = speedXY.it(x7, y7, time_msec),
+            xy4_velo = c(0, kz(xy4_velo[is.finite(xy4_velo)], m = 5, k = 3)),
+            xy7_velo = c(0, kz(xy7_velo[is.finite(xy7_velo)], m = 5, k = 3)))
+  
+write_tsv(ts_prep, "FC_ts_preprared.tsv")
+ts <- NULL
+```
+
+##add kinematic measure to gestures
+```{r write FC_ts_gestures.csv or add gesture ID's and participant info to prepared time series }
+ts_prep <- read_tsv("FC_ts_preprared.tsv")
+ts_gestures <- data.frame()
+for (i in unique(FC_gestures$ID_dyad[!is.na(FC_gestures$ID_dyad)])) {
+  ts.file <- as.data.frame(subset(ts_prep, ID_dyad == i)) #important that we work with 'data.frame' format for 'load.event'
+  FC_gestures.file <- as.data.frame(subset(FC_gestures, ID_dyad == i)) #
+  print(i)
+  ts.file$ID_gesture <- load.event(ts.file$time_msec, FC_gestures.file , 3) 
+  ts_gestures <- rbind.data.frame(ts_gestures, ts.file)
+}
+
+#add participant information
+ts_gestures <- ts_gestures %>%
+  inner_join(FC_participants, by = "ID_participant") %>%
+  inner_join(partners, by = "ID_partner") %>%
+  mutate(condition = paste0(label_participant, "-", label_partner))
+
+#save annotated time series to disk
+ts_gestures <- subset(ts_gestures, !is.na(ID_gesture))
+write_tsv(ts_gestures, "FC_ts_gestures.tsv")
+```
+
+```{r calcuate kinematic measures per gesture}
+FC_ts_gestures <- read_tsv("FC_ts_gestures.tsv")
+size_velo <- FC_ts_gestures %>% 
+  group_by(ID_participant, ID_partner, ID_gesture) %>%
+  summarise(size.rh = ((max(x4)-min(x4))*(max(y4)-min(y4))) %>% round(digits = 3),
+            size.lh = ((max(x7)-min(x7))*(max(y7)-min(y7))) %>% round(digits = 3),
+            traj.rh = sum(c(0, sqrt( rowSums( cbind(diff(x4)^2, diff(y4)^2)) ))) %>% round(digits = 3),
+            traj.lh = sum(c(0, sqrt( rowSums( cbind(diff(x7)^2, diff(y7)^2)) ))) %>% round(digits = 3),
+            ampl_y.rh = max(y4) %>% round(digits = 3),
+            ampl_y.lh = max(y7) %>% round(digits = 3),
+            ampl_x.rh = max(abs(x4)) %>% round(digits = 3),
+            ampl_x.lh = max(abs(x7)) %>% round(digits = 3),
+            peak_velo.rh = max(xy4_velo) %>% round(digits = 3),
+            peak_velo.lh = max(xy7_velo) %>% round(digits = 3))
+
+apex.rh <- FC_ts_gestures %>% 
+  group_by(ID_participant, ID_partner, ID_gesture) %>%
+  filter(xy4 == max(xy4)) %>%
+  summarise(apex.rh = first(time_msec))
+
+apex.lh <- FC_ts_gestures %>% 
+  group_by(ID_participant, ID_partner, ID_gesture) %>%
+  filter(xy7 == max(xy7)) %>%
+  summarise(apex.lh = first(time_msec))
+```
+
+```{r join kinematic measures and gesture info}
+FC_gestures <- read_tsv("FC_gestures_nokine.tsv")
+kinematics <- inner_join(size_velo, apex.rh,by=keys) %>%
+  inner_join(apex.lh,by=keys) %>%
+  inner_join(FC_gestures, by=keys)
+
+kinematics$size = apply(kinematics , 1, select_size)
+kinematics$traj = apply(kinematics , 1, select_traj)
+kinematics$ampl_x = apply(kinematics , 1, select_ampl_x)
+kinematics$ampl_y = apply(kinematics , 1, select_ampl_y)
+kinematics$peak_velo = apply(kinematics , 1, select_velo)
+
+kinematics <- kinematics %>%
+  relocate(size, .after = size.lh) %>%
+  relocate(traj, .after = traj.lh) %>%
+  relocate(ampl_x, .after = ampl_x.lh) %>%
+  relocate(ampl_y, .after = ampl_y.lh) %>%
+  relocate(peak_velo, .after = peak_velo.lh)
+
+#update the "FC_gestures" data frame
+FC_gestures <- kinematics %>%
+  mutate(ID_gesture = gsub("sem_0", "sem_", ID_gesture)) %>% #correct label names
+  relocate(ID_group, .after = ID_partner) %>%
+  relocate(ID_dyad, .after = ID_group) %>%
+  relocate(t0, .after = ID_gesture) %>%
+  relocate(t1, .after = t0)
+write_tsv(FC_gestures, "FC_gestures_kine.tsv")
+```
+
+##add participant info to gestures
+```{r participant info}
+FC_gestures <- FC_gestures %>%
+  inner_join(FC_participants, by = "ID_participant") %>%
+  inner_join(FC_partners, by = "ID_partner") %>%
+  mutate(condition = paste0(label_participant, "-", label_partner))
+
+#save to disk
+write_tsv(FC_gestures, "FC_gestures_final.tsv")
+FC_gestures <- read_tsv("FC_gestures_final.tsv")
+```
+
+##add gesture data to pause-gesture overlaps
+```{r}
+FC_gestures <- read_tsv("FC_gestures_final.tsv")
+FC_pauses_overlap <- read_tsv("FC_pauses.tsv") %>%
+  left_join(FC_gestures %>%
+              select(-ID_dyad, -ID_group, -ID_gesture), by = c("ID_participant", "ID_partner", "t0", "t1")) %>%
+  mutate(pause = if_else(grepl("no", pause), 0, 1),
+         pause_duration = pause_t1-pause_t0,
+         pause_duration = if_else(pause_duration < 200, NA, pause_duration),
+         pause_t0 = if_else(is.na(pause_duration), NA, pause_t0),
+         pause_t1 = if_else(is.na(pause_duration), NA, pause_t1),
+         pause = if_else(!is.na(pause_duration), 1, 0)) %>%
+  relocate(pause_duration, .after = pause)
+
+write_tsv(FC_pauses_overlap, "FC_pauses_overlap.tsv")  
+```
+
+##add gesture data to deixis
+```{r}
+FC_gestures <- read_tsv("FC_gestures_final.tsv")
+deixis <- read_tsv("FC_deixis.tsv") %>%
+  left_join(FC_gestures %>%
+              select(-ID_dyad, -ID_group, -ID_gesture), by = c("ID_participant", "ID_partner", "t0", "t1"))
+
+write_tsv(deixis, "FC_deixis.tsv")  
+```
+
+#FC: summarize gestures and speech
+```{r}
+FC_gestures_summary <- FC_gestures %>%
+  group_by(ID_participant, ID_partner, ID_group, ID_dyad, condition) %>%
+  summarise(g_unit_freq= n(), #total number of gesture units
+            g_phrase_freq = length(unique(phrase_ID)),
+            g_phrase_middle = length(phrase_position[phrase_position=="middle"]),
+            gp_nonref = round(length(nonref[nonref=="yes"])/g_unit_freq, digits = 2), #proportion (divided by total n  of units)
+            gp_icon = round(length(icon[icon=="yes"])/g_unit_freq, digits = 2),
+            gp_metaph = round(length(metaph[metaph=="yes"])/g_unit_freq, digits = 2),
+            gp_deixis_abstr = round(length(deixis[deixis=="abstract"])/g_unit_freq, digits = 2),
+            gp_deixis_conc = round(length(deixis[deixis=="concrete"])/g_unit_freq, digits = 2),
+            gp_conv = round(length(conv[conv=="yes"])/g_unit_freq, digits = 2),
+            g_dur_total_sec = sum(t1-t0)/1000, #total gesture time
+            g_units_per_phrase = round(g_unit_freq/g_phrase_freq, digits = 2),
+            g_prop_units_middle = round(g_phrase_middle/g_unit_freq, digits = 2))
+write_tsv(FC_gestures_summary, "FC_gestures_summary.tsv")
+FC_gestures_summary <- read_tsv("FC_gestures_summary.tsv")
+```
+
+```{r merge gesture and speech summary}
+FC_speech_summary <- read_tsv("FC_speech_summary.tsv")
+FC_multimod_summary <- FC_gestures_summary %>%
+  select(-ID_group, -ID_dyad) %>%
+  inner_join(FC_speech_summary, by = c("ID_participant", "ID_partner")) %>%
+  relocate(ID_group, .before = ID_participant) %>%
+  relocate(ID_dyad, .after = ID_group) %>%
+  mutate(g_prop_time = round(g_dur_total_sec/s_dur_total_sec, digits = 2))
+write_tsv(FC_multimod_summary, "FC_multimod_summary.tsv")
+FC_multimod_summary <- read_tsv("FC_multimod_summary.tsv")
+```
+
+#analysis 1: gesture frequency
+##plot: interaction, gesture and speech time
+```{r }
+t <- read_tsv("FC_multimod_summary.tsv") %>%
+  select(-starts_with("gp_")) %>%
+  rename(s_speaker_dur_sec = s_dur_total_sec) %>%
+  mutate(s_interaction_dur_sec = as.numeric(270)) %>%
+  pivot_longer(cols = starts_with(c("s_", "g_")), names_to = "variable", values_to = "measurement") %>%
+  mutate(ID = ID_dyad,
+         corpus = "FC") %>%
+  select(ID, corpus, condition, variable, measurement) %>%
+  bind_rows(read_tsv("PD_multimod_summary.tsv") %>%
+              select(-starts_with("gp_"), -s_listener_dur_sec) %>%
+              pivot_longer(cols = starts_with(c("s_", "g_")), names_to = "variable", values_to = "measurement") %>%
+              mutate(ID = filename,
+                     corpus = "PD") %>%
+              select(ID, corpus, condition, variable, measurement)) %>%
+  group_by(corpus, condition, variable) %>%
+  summarise(mean = round(mean(measurement), digits=2),
+            sd = round(sd(measurement), digits=2)) %>%
+  filter(grepl("sec", variable)) %>%
+  mutate(variable = as.factor(variable),
+         variable = fct_relevel(variable,  "g_dur_total_sec", "s_speaker_dur_sec", "s_interaction_dur_sec"))
+
+read_tsv("PD_multimod_summary.tsv") %>%
+  group_by(condition) %>%
+  reframe(m = mean(s_listener_dur_sec),
+          sd = sd(s_listener_dur_sec))
+
+ggplot(t, aes(condition, mean, fill=variable)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.4, size=0.8, colour="orange", alpha=0.9, position=position_dodge(.9)) +
+  facet_wrap(~corpus) +
+  coord_flip() +
+  scale_fill_manual(values = c("#76c68f", "#1984c5", "#e6d800"), name = "Total Time", labels = c("Gesture", "Speech", "Interaction"), guide = guide_legend(reverse = TRUE)  ) +
+  xlab("Condition") +
+  ylab("Time (seconds)") +
+  theme_classic() +
+  theme(legend.position="top",
+        legend.title=element_blank(),
+        panel.grid.major.x = element_line(color = "grey",
+                                          size = 0.3,
+                                          linetype = 2)) +
+  scale_y_continuous(breaks = seq(0, 270, by = 50))
+ggsave("03_interaction_speech_gesture.png", width =6, height = 3.7, dpi = 300)
+```
+##plot: gesture/speech ratio
+```{r }
+read_tsv("PD_multimod_summary.tsv") %>%
+  mutate(g_rate_min = (g_unit_freq/s_speaker_dur_sec)*60) %>%
+  inner_join(read_tsv("PD_speech.tsv") %>%
+              select(filename, word_count) %>%
+              group_by(filename) %>%
+              reframe(word_count = sum(word_count))) %>%
+  mutate(g_rate_100w = (g_unit_freq/word_count)*100) %>%
+  group_by(condition) %>%
+  reframe(m_min = mean(g_rate_min),
+          sd_min = sd(g_rate_min),
+          m_w = mean(g_rate_100w),
+          sd_w = sd(g_rate_100w))
+
+read_tsv("FC_multimod_summary.tsv") %>%
+  mutate(g_rate_min = (g_unit_freq/s_dur_total_sec)*60) %>%
+  inner_join(read_tsv("FC_speech.tsv") %>%
+              select(ID_participant, ID_partner, word_count) %>%
+              group_by(ID_participant, ID_partner, ) %>%
+              reframe(word_count = sum(word_count))) %>%
+  mutate(g_rate_100w = (g_unit_freq/word_count)*100) %>%
+  group_by(condition) %>%
+  reframe(m_min = mean(g_rate_min),
+          sd_min = sd(g_rate_min),
+          m_w = mean(g_rate_100w),
+          sd_w = sd(g_rate_100w))
+
+r <- read_tsv("PD_multimod_summary.tsv") %>%
+  #mutate(g_prop_sequentiality = g_phrase_freq/g_unit_freq) %>%
+  pivot_longer(cols = starts_with("g_prop"),
+               names_to = "variable",
+               values_to = "measurement") %>%
+  mutate(ID = filename,
+         corpus = "PD") %>%
+  select(ID, ID_participant, ID_partner, corpus, condition, variable, measurement) %>%
+  bind_rows(read_tsv("FC_multimod_summary.tsv") %>%
+              #mutate(g_prop_sequentiality = g_phrase_freq/g_unit_freq) %>%
+              pivot_longer(cols = starts_with("g_prop"),
+                           names_to = "variable",
+                           values_to = "measurement") %>%
+              mutate(ID = ID_dyad,
+                     corpus = "FC") %>%
+              select(ID, ID_participant, ID_partner, corpus, condition, variable, measurement)) %>%
+  filter(!grepl("L2-L1", condition))
+
+prop <- r %>% filter(grepl("g_prop_time", variable)) %>%
+  group_by(corpus, condition) %>%
+  summarise(mean = mean(measurement) %>% round(digits = 2),
+            sd = sd(measurement) %>% round(digits = 2))
+
+middle <- r %>% filter(grepl("g_prop_units_middle", variable)) %>%
+  group_by(corpus, condition) %>%
+  summarise(mean = mean(measurement, na.rm=T) %>% round(digits = 2),
+            sd = sd(measurement, na.rm=T) %>% round(digits = 2))
+
+m_prop <- lmer(measurement ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = r %>% filter(grepl("g_prop_time", variable)))
+summary(m_prop)
+m_middle <- lmer(measurement ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = r %>% filter(grepl("g_prop_units_middle", variable)))
+summary(m_middle)
+
+ggplot(r, aes(condition, measurement, fill=variable)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#00A08A", "#F98400"), labels = c("Gesture use", "Gesture sequentiality"), name = "Measure") +
+  facet_wrap(~corpus) +
+  xlab("Condition") +
+  ylab("Proportion") +
+  theme_classic() +
+  theme(legend.position="top",
+        panel.grid.major.y = element_line(color = "grey",
+                                          size = 0.3,
+                                          linetype = 2)) +
+  geom_hline(yintercept=1, size=0.6, linetype="dashed", color = "red") +
+  scale_y_continuous(breaks = seq(0, 1.75, by = 0.25))
+ggsave("03_gesture_ratio.png", width = 6, height = 3.7, dpi = 300)
+```
+
+#analysis 1: semantic functions
+##pie chart
+```{r pie chart}
+read_tsv("PD_gestures_final.tsv") %>%
+  mutate(ID = filename,
+         corpus = "PD") %>%
+  select(ID, corpus, condition, nonref, icon, metaph, deixis, conv) %>%
+  mutate(dim_cumul = paste(nonref, icon, metaph, deixis, conv, sep = "-")) %>%
+  filter(!grepl("NA-NA-NA-NA-NA", dim_cumul)) %>%
+  bind_rows(read_tsv("FC_gestures_final.tsv") %>%
+              mutate(ID = ID_dyad,
+                     corpus = "FC") %>%
+              select(ID, corpus, condition, nonref, icon, metaph, deixis, conv) %>%
+              mutate(dim_cumul = paste(nonref, icon, metaph, deixis, conv, sep = "-"))) %>%
+  group_by(corpus, dim_cumul, condition) %>%
+  summarise(freq = n()) %>%
+  group_by(corpus, condition) %>%
+  mutate(total = sum(freq)) %>%
+  ungroup() %>%
+  group_by(corpus, dim_cumul, condition) %>%
+  mutate(perc = freq/total,
+         dim = if_else(dim_cumul == "no-no-no-abstract-no" , "abstract", "rest"),
+         dim = if_else(dim_cumul == "no-no-no-concrete-no" , "concrete", dim),
+         dim = if_else(dim_cumul == "no-no-no-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "yes-no-no-no-no" , "non-ref", dim),
+         dim = if_else(dim_cumul == "no-yes-no-no-no" , "icon", dim),
+         dim = if_else(dim_cumul == "no-yes-no-abstract-no" , "icon + abstract", dim),
+         dim = if_else(dim_cumul == "no-yes-no-concrete-no" , "icon + concrete", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-no" , "metaphor", dim),
+         dim = if_else(dim_cumul == "no-no-yes-abstract-no" , "metaphor + abstract", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-no-abstract-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-yes-concrete-no" , "metaphor + concrete", dim),
+         dim = as.factor(dim),
+         dim = factor(dim, levels = c("non-ref",
+                       "icon", "icon + abstract", "icon + concrete", 
+                       "metaphor", "metaphor + abstract", "metaphor + concrete",
+                       "abstract", "concrete",
+                       "emblem"))) %>%
+  mutate(labels = scales::percent(perc)) %>%
+  filter(!grepl("L2-L1", condition)) %>%
+  filter(!is.na(dim)) %>%
+  ggplot(aes(x = "", y = perc, fill = dim)) +
+  geom_col() +
+  scale_fill_manual(values = pal_combi) +
+  geom_text(aes(x =  1.1, label = ifelse(dim == "metaphor + abstract" & corpus == "FC" |
+                                           dim == "concrete" & corpus == "FC" |
+                                           dim == "icon" & corpus == "PD" | 
+                                           dim == "icon + abstract" & corpus == "PD" |
+                                           dim == "metaphor" |
+                                           dim == "abstract" |
+                                           dim == "non-ref", labels, "")),
+             color = "white", size = 4,
+             position = position_stack(vjust = 0.6),
+             show.legend = FALSE,) +
+  coord_polar(theta = "y") +
+  facet_grid(condition~corpus, switch="y") +
+  theme_classic() +
+  guides(fill = guide_legend(title = "Combinations")) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_blank(),
+        axis.line.x = element_blank()) +
+  labs(x="", y="")
+ggsave("03_pie_functions.png", width= 6, height = 4, dpi = 300)
+```
+##models semantic functions
+```{r model functions}
+p <- read_tsv("PD_multimod_summary.tsv") %>%
+  mutate(ID = filename,
+         corpus = "PD") %>%
+  select(ID, ID_participant, ID_partner, corpus, condition, starts_with("gp_")) %>%
+  bind_rows(read_tsv("FC_multimod_summary.tsv") %>%
+              mutate(ID = ID_dyad,
+                     corpus = "FC") %>%
+              select(ID, ID_participant, ID_partner, corpus, condition, starts_with("gp_"))) %>%
+  filter(!grepl("L2-L1", condition))
+
+m_nonref <- lmer(gp_nonref ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_nonref)
+plot(allEffects(m_nonref))
+
+m_icon <- lmer(gp_icon ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_icon)
+plot(allEffects(m_icon))
+
+m_metaph <- lmer(gp_metaph ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_metaph)
+plot(allEffects(m_metaph))
+
+m_deixis_abstr <- lmer(gp_deixis_abstr ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_deixis_abstr)
+plot(allEffects(m_deixis_abstr))
+
+m_deixis_conc <- lmer(gp_deixis_conc ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_deixis_conc)
+plot(allEffects(m_deixis_conc))
+
+m_conv<- lmer(gp_conv ~ condition*corpus + (1|ID_participant) + (1|ID_partner), data = p)
+summary(m_conv)
+plot(allEffects(m_conv))
+```
+
+```{r plot model fits}
+f1 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_nonref))) %>% mutate(variable = "non-ref")
+f2 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_icon))) %>% mutate(variable = "icon")
+f3 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_metaph))) %>% mutate(variable = "metaphor")
+f4 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_deixis_abstr))) %>% mutate(variable = "abstract")
+f5 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_deixis_conc))) %>% mutate(variable = "concrete")
+f6 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_conv))) %>% mutate(variable = "emblem")
+
+do.call("rbind", list(f1, f2, f3, f4, f5, f6)) %>%
+  mutate(Dimension = factor(variable, levels = c("non-ref", "icon", "metaphor", "abstract", "concrete", "emblem"))) %>%
+  ggplot(aes(x = condition, y = fit, color = Dimension, group = Dimension, alpha = ifelse(Dimension == "non-ref"|
+                                                                                         Dimension == "abstract", 1, 0.9))) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = pal_single) +
+  facet_wrap(~corpus) +
+  ggtitle("Semantic dimensions") +
+  xlab("Condition") +
+  ylab("Proportion") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(strip.background = element_rect(colour="black", fill="white")) +
+  guides(alpha = FALSE)
+#IDEETJE: ALPHA VERLAGEN VOOR NIET SIGNIFICANTE VERSCHILLEN
+ggsave("03_regression_functions.png", dpi=300, width = 6, height = 4)
+```
+
+#analysis 1: kinematics
+```{r import data}
+a <- read_tsv("PD_gestures_final.tsv") %>%
+  mutate(ID = filename,
+         corpus = "PD") %>%
+  select(-ID_interaction, -item, -gender, -language) %>%
+  bind_rows(read_tsv("FC_gestures_final.tsv") %>%
+              mutate(ID = ID_dyad,
+                     corpus = "FC") %>%
+              select(-ID_group, -label_participant, -label_partner)) %>%
+  filter(!grepl("L2-L1", condition)) %>%
+  mutate(#phrase_position = as.factor(if_else(phrase_position == "middle", "yes", "no")),
+         phrase_position = fct_relevel(phrase_position, "middle", "first", "last", "no"),
+         unit_dur_sec = (t1-t0)/1000,
+         abstract = if_else(deixis=="abstract", "yes", "no"),
+         concrete = if_else(deixis=="concrete", "yes", "no"))
+
+a %>%
+  group_by(hand, corpus) %>%
+  reframe(freq = n())
+```
+
+##models: amplitude
+```{r}
+m_ampl_x <- lmer(ampl_x ~ condition*corpus + phrase_position + hand + (1|ID_participant) + (1|ID_partner), data = a)
+m_ampl_y <- lmer(ampl_y ~ condition*corpus+ phrase_position + hand + (1|ID_participant) + (1|ID_partner), data = a)
+
+m_ampl_x_nonref <- lmer(ampl_x ~ corpus*nonref + (1|ID_participant) + (1|ID_partner), data = a)
+m_ampl_y_nonref <- lmer(ampl_y ~ corpus*nonref+ (1|ID_participant) + (1|ID_partner), data = a)
+
+summary(m_ampl_y)
+plot(allEffects(m_ampl_y_nonref))
+```
+
+##models: size
+```{r}
+s0 = lmer(ampl_x ~ (1|ID_participant) + (1|ID_partner), data = a)
+s1 = update(s0,.~. + corpus) #adding condition and corpus:condition does not improve the model
+s2 = update(s1,.~. + nonref)
+s3 = update(s2,.~. + corpus*nonref) #adding condition and corpus:condition does not improve the model
+s4 = update(s3,.~. + icon)
+s5 = update(s4,.~. + corpus*icon) #adding condition and corpus:condition does not improve the model
+s6 = update(s5,.~. + abstract) #adding metaph does not...
+s7 = update(s6,.~. + corpus*abstract)
+s8 = update(s7,.~. + condition*corpus*abstract) #adding condition doe not...
+s9 = update(s8,.~. + concrete)
+s10 = update(s9,.~. + corpus*concrete) #adding condition and corpus:condition does not...
+s11 = update(s10,.~. + conv)
+s12 = update(s11,.~. + condition*conv)
+anova(s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12)
+
+s_final = update(s12,.~. + phrase_position*corpus*condition*abstract)
+summary(s_final)
+```
+
+
+```{r}
+summary(a$size)
+
+m_nonref <- lmer(size ~ nonref*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_icon <- lmer(size ~ icon*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_metaph <- lmer(size ~ metaph*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_abstract <- lmer(size ~ abstract*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_concrete <- lmer(size ~ concrete*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_conv <- lmer(size ~ conv*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+
+s0 = lmer(size ~ (1|ID_participant) + (1|ID_partner), data = a)
+s1 = update(s0,.~. + corpus) #adding condition and corpus:condition does not improve the model
+s2 = update(s1,.~. + nonref)
+s3 = update(s2,.~. + corpus*nonref) #adding condition and corpus:condition does not improve the model
+s4 = update(s3,.~. + icon)
+s5 = update(s4,.~. + corpus*icon) #adding condition and corpus:condition does not improve the model
+s6 = update(s5,.~. + abstract) #adding metaph does not...
+s7 = update(s6,.~. + corpus*abstract)
+s8 = update(s7,.~. + condition*corpus*abstract) #adding condition doe not...
+s9 = update(s8,.~. + concrete)
+s10 = update(s9,.~. + corpus*concrete) #adding condition and corpus:condition does not...
+s11 = update(s10,.~. + conv)
+s12 = update(s11,.~. + condition*conv)
+anova(s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12)
+
+s_final = update(s12,.~. + phrase_position)
+
+a$size <- as.vector(scale(a$size))
+a$corpus <- as.factor(a$corpus)
+levels(a$corpus)
+a$corpus <- relevel(a$corpus, "PD")
+s_plot<- lmer(size ~
+                    corpus*nonref + 
+                    corpus*icon +
+                    corpus*metaph +
+                    corpus*abstract +
+                    corpus*concrete +
+                    corpus*conv + phrase_position + (1|ID_participant) + (1|ID_partner), data = a)
+summary(s12)
+summary(s_plot)
+summary(s_final)
+plot(allEffects(s_final))
+
+#a different way to obtain the same result:
+#d <- a %>% filter(grepl("abstract", deixis))
+
+#m_size <- lmer(size ~ condition*corpus*phrase_position + (1|ID_participant) + (1|ID_partner), data = d)
+#m_velo <- lmer(peak_velo ~ condition*corpus*phrase_position + (1|ID_participant) + (1|ID_partner), data = d)
+#m_traj <- lmer(traj ~ condition*corpus*phrase_position + (1|ID_participant) + (1|ID_partner), data = d)
+
+#summary(m_size)
+```
+
+##models: duration
+```{r}
+m_dur_nonref <- lmer(unit_dur_sec ~ nonref*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_dur_icon <- lmer(unit_dur_sec ~ icon*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_dur_metaph <- lmer(unit_dur_sec ~ metaph*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_dur_abstract <- lmer(unit_dur_sec ~ abstract*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_dur_concrete<- lmer(unit_dur_sec ~ concrete*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+m_dur_conv <- lmer(unit_dur_sec ~ conv*corpus+ (1|ID_participant) + (1|ID_partner), data = a)
+
+d0 = lmer(unit_dur_sec~ (1|ID_participant) + (1|ID_partner), data = a)
+d1 = update(d0,.~. + corpus)
+d2 = update(d1,.~. + condition) #adding corpus:condition does not improve the model
+d3 = update(d2,.~. + nonref)
+d4 = update(d3,.~. + corpus*nonref) #adding condition or corpus:condition does not improve
+d5 = update(d4,.~. + icon)
+d6 = update(d5,.~. + corpus*icon) #tendency
+d7 = update(d6,.~. +  condition*icon) #adding corpus:condition does not improve
+d8 = update(d7,.~. + metaph) #adding condition, corpus or corpus:condition does not improve
+d9 = update(d8,.~. + abstract) #adding condition, corpus or corpus:condition does not improve
+d10 = update(d9,.~. + conv)
+d11 = update(d10,.~. + corpus*conv) #adding condition does not improve
+anova(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11)
+d_final = update(d11,.~. + phrase_position*corpus*condition)
+summary(d11)
+summary(d_final)
+
+m_dur_plot <- lmer(unit_dur_sec ~
+                    corpus*condition*nonref + 
+                    corpus*condition*icon +
+                    corpus*condition*metaph +
+                    corpus*condition*abstract +
+                     corpus*condition*concrete+
+                    corpus*condition*conv + (1|ID_participant) + (1|ID_partner), data = a)
+summary(m_dur_plot)
+
+nnf <- a %>% filter(!grepl("yes", nonref))
+
+m_dur <- lmer(unit_dur_sec ~ condition*corpus*phrase_position + (1|ID_participant) + (1|ID_partner), data = a)
+
+summary(m_size_sem)
+#plot(allEffects(m_dur))
+```
+
+
+##plot: trajectories
+```{r}
+read_tsv("PD_ts_gestures.tsv") %>%
+  inner_join(PD_participants) %>%
+  select(condition, x4, y4, x7, y7) %>%
+  mutate(corpus = "PD") %>%
+  bind_rows(read_tsv("FC_ts_gestures.tsv") %>%
+              inner_join(FC_participants) %>%
+              filter(!grepl("L2-L1", condition)) %>%
+              slice(which(row_number() %% 2 == 1)) %>%
+              select(condition, x4, y4, x7, y7) %>%
+              mutate(corpus = "FC")) %>% 
+  ggplot(aes(x4, y4, color = condition)) +
+  geom_point(alpha=0.5,size = 1) +
+  scale_color_manual(values = c("#1984c5", "#e6d800"), name = "Condition") +
+  annotate("pointrange", x = 0, y = 0, xmin = -1, xmax = 1,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -1, xmax = 1,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.2, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.2, label = "Neck") +
+  facet_wrap(~corpus) +
+  coord_fixed(ratio=1) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme_classic() +
+  theme(legend.position="top") +
+  ggtitle("Gesture trajectories") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)")
+ggsave("03_trajectories.png", dpi=300, width = 7, height = 4)
+
+
+```
+
+##plot: amplitude
+```{r}
+f1 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_ampl_x))) %>% mutate(variable = "Horizontal")
+f2 <- do.call(rbind.data.frame, as.data.frame(allEffects(m_ampl_y))) %>% mutate(variable = "Vertical")
+
+do.call("rbind", list(f1, f2)) %>%
+  mutate(Dimension = factor(variable, levels = c("Horizontal", "Vertical"))) %>%
+  ggplot(aes(x = condition, y = fit, color = Dimension, group = Dimension)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c("#00A08A", "#F98400"), name = "Dimension") +
+  facet_wrap(~corpus) +
+  ggtitle("Linear regression for Amplitude") +
+  xlab("Condition") +
+  ylab("Position (scaled)") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_amplitudes.png", width =6, height = 3.7, dpi = 300)
+```
+##plot: size and semantic function
+
+```{r}
+a$size <- as.vector(scale(a$size))
+s_plot<- lmer(size ~ corpus*condition + nonref + icon + metaph + abstract + concrete + conv + phrase_position + hand + (1|ID_participant) + (1|ID_partner), data = a)
+summary(s_plot)
+
+f_s_plot <- list(as.data.frame(allEffects(s_plot))) 
+f_s_plot[[1]]$`corpus:condition` %>%
+  #mutate(Dimension = factor(variable, levels = c("Horizontal", "Vertical"))) %>%
+  ggplot(aes(x = condition, y = fit)) +
+  geom_point(size=3, color = "#FF0000") +
+  geom_line(group=1, color = "#FF0000") + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7, color = "#FF0000") +
+  #scale_color_manual(values = c("#F98400"), name = "Condition") +
+  facet_wrap(~corpus) +
+  ggtitle("Linear regression for Size") +
+  xlab("Condition") +
+  ylab("Size (z-scaled)") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("figure9.png", width =6, height = 3.7, dpi = 300)
+```
+
+```{r}
+f_s_plot <- list(as.data.frame(allEffects(s_plot))) 
+f1 <- f_s_plot[[1]]$`corpus:nonref` %>% mutate(variable = "non-ref") %>% rename(rating = nonref)
+f2 <- f_s_plot[[1]]$`corpus:icon` %>% mutate(variable = "icon") %>% rename(rating = icon)
+f3 <- f_s_plot[[1]]$`corpus:metaph` %>% mutate(variable = "metaphor") %>% rename(rating = metaph)
+f4 <- f_s_plot[[1]]$`corpus:abstract` %>% mutate(variable = "abstract") %>% rename(rating = abstract)
+f5 <- f_s_plot[[1]]$`corpus:concrete` %>% mutate(variable = "concrete") %>% rename(rating = concrete)
+f6 <- f_s_plot[[1]]$`corpus:conv` %>% mutate(variable = "emblem") %>% rename(rating = conv)
+
+do.call("rbind", list(f1, f2, f3, f4, f5, f6)) %>%
+  mutate(Dimension = factor(variable, levels = c("non-ref", "icon", "metaphor", "abstract", "concrete", "emblem"))) %>%
+  ggplot(aes(x = rating, y = fit, color = Dimension, group = Dimension
+             #, alpha = ifelse(corpus == "PD" |
+              #                                                                         Dimension == "metaphor" & corpus == "FC" |
+               #                                                                          Dimension == "emblem" & corpus == "FC", 0.9, 1))) +
+  ))+
+  geom_point(position = position_dodge(width = 0.3), size = 3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = rating, ymin = lower, ymax = upper), width = 0.3, size = 0.7, position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c(
+    "#00A08A", # non-referential (green)
+    "#FFD800", # icon (yellow)
+    "#5BBCD6", # metaphor
+    "#ff8787", # abstract
+    "#FF0000", # concrete
+    "#bdbab7")) +
+  facet_grid(~corpus) +
+  ggtitle("Semantic function and size") +
+  xlab("Condition") +
+  ylab("Size") +
+  theme_bw() +
+  theme(strip.background = element_rect(colour = "black", fill = "white")) +
+  guides(alpha = FALSE)
+
+ggsave("03_size_functions.png", dpi=300, width = 6, height = 4)
+```
+
+```{r}
+f_s_final <- list(as.data.frame(allEffects(s_final)))
+f1 <- f_s_final[[1]]$`corpus:abstract:condition:phrase_position`
+f1 %>%
+  mutate(abstract = fct_recode(abstract, "Abstract Deixis" = "yes", "Other" = "no")) %>%
+  ggplot(aes(x = condition, y = fit, color = phrase_position, group = phrase_position)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c("#00A08A", "#F98400"), name = "Phrase position", labels = c("Middle", "Initial/Final")) +
+  facet_grid(abstract~corpus) +
+  ggtitle("Abstract deixis and phrase position") +
+  xlab("Condition") +
+  ylab("Size") +
+  theme_bw(
+    
+  )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_size_interaction_abstract.png", width =6, height = 4, dpi = 300)
+```
+
+##plot: size
+```{r}
+do.call(rbind.data.frame, as.data.frame(allEffects(m_size))) %>% mutate(variable = "Size") %>%
+  ggplot(aes(x = condition, y = fit, color = phrase_position, group = phrase_position)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c("#F98400", "#00A08A"), name = "Phrase position", labels = c("Initial/Final", "Middle")) +
+  facet_wrap(~corpus) +
+  ggtitle("Size of abstract deictics") +
+  xlab("Condition") +
+  ylab("Size") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_size.png", width =6, height = 4, dpi = 300)
+```
+
+##plot: duration and semantic function
+```{r}
+f_d_plot <- list(as.data.frame(allEffects(m_dur_plot))) 
+f1 <- f_d_plot[[1]]$`corpus:condition:nonref` %>% mutate(variable = "non-ref") %>% rename(rating = nonref)
+f2 <- f_d_plot[[1]]$`corpus:condition:icon` %>% mutate(variable = "icon") %>% rename(rating = icon)
+f3 <- f_d_plot[[1]]$`corpus:condition:metaph` %>% mutate(variable = "metaphor") %>% rename(rating = metaph)
+f4 <- f_d_plot[[1]]$`corpus:condition:abstract` %>% mutate(variable = "abstract") %>% rename(rating = abstract)
+f5 <- f_d_plot[[1]]$`corpus:condition:concrete` %>% mutate(variable = "concrete") %>% rename(rating = concrete)
+f6 <- f_d_plot[[1]]$`corpus:condition:conv` %>% mutate(variable = "emblem") %>% rename(rating = conv)
+
+do.call("rbind", list(f1, f2, f3, f4, f5, f6)) %>%
+  mutate(Dimension = factor(variable, levels = c("non-ref", "icon", "metaphor", "abstract", "concrete", "emblem"))) %>%
+  ggplot(aes(x = rating, y = fit, color = Dimension, group = Dimension, alpha = ifelse(Dimension == "non-ref"|
+                                                                                         Dimension == "icon" |
+                                                                                         Dimension == "emblem", 1, 0.9))) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = rating, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c(
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  "#5BBCD6", #metaphor
+  "#ff8787", #abstract
+  "#FF0000", #concrete
+  "#bdbab7")) +
+  facet_grid(condition~corpus) +
+  ggtitle("Semantic function and duration") +
+  xlab("Condition") +
+  ylab("Duration (sec)") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(strip.background = element_rect(colour="black", fill="white"))  +
+  guides(alpha = FALSE)
+#IDEETJE: ALPHA VERLAGEN VOOR NIET SIGNIFICANTE VERSCHILLEN
+ggsave("03_dur_functions.png", dpi=300, width = 6, height = 5.5)
+```
+
+##plot: duration and phrase position
+```{r}
+f_d_final <- list(as.data.frame(allEffects(d_final)))
+f1 <- f_d_final[[1]]$`corpus:condition:phrase_position`
+f1 %>%
+  #mutate(abstract = fct_recode(abstract, "Abstract Deixis" = "yes", "Other" = "no")) %>%
+  ggplot(aes(x = condition, y = fit, color = phrase_position, group = phrase_position)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c("#00A08A", "#F98400"), name = "Phrase position", labels = c("Middle", "Initial/Final")) +
+  facet_grid(~corpus) +
+  ggtitle("Duration and phrase position") +
+  xlab("Condition") +
+  ylab("Duration") +
+  theme_bw(
+    
+  )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_dur_phrase.png", width =6, height = 3, dpi = 300)
+```
+
+#analysis 2: pauses
+##summarize data
+```{r}
+#summarize to obtain one row per gesture. All gestures in PD are included, in FC only the gestures that were annotated for pause overlaps
+pauses_summary <- read_tsv("PD_pauses_overlap.tsv") %>%
+  group_by(ID_gesture, condition, ID_participant, ID_partner,
+           size, peak_velo, phrase_position, nonref, icon, metaph, deixis, conv) %>%
+  summarise(pause_n =  sum(pause),
+            pause_overlap_duration = sum(pmax(0, pmin(pause_t1, t1) - pmax(pause_t0, t0)), na.rm = T),
+            pause_dummy = if_else(pause_overlap_duration >= 200, 1, 0),
+            pause_dummy = if_else(is.na(pause_dummy), 0, pause_dummy)) %>%
+  mutate(corpus = "PD") %>%
+  bind_rows(read_tsv("FC_pauses_overlap.tsv") %>%
+  group_by(ID_gesture, condition, ID_participant, ID_partner,
+           size, peak_velo, phrase_position, nonref, icon, metaph, deixis, conv) %>%
+  summarise(pause_n =  sum(pause),
+            pause_overlap_duration = sum(pmax(0, pmin(pause_t1, t1) - pmax(pause_t0, t0))),
+            pause_dummy = if_else(pause_overlap_duration >= 200 , 1, 0),
+            pause_dummy = if_else(is.na(pause_dummy), 0, pause_dummy)) %>%
+  filter(grepl("(L1-L1|L1-L2)", condition)) %>%
+  mutate(corpus = "FC"))
+
+#there are more abstract deictic gestures in PD in phrase middle position (534 vs. 435)
+pauses_summary %>%
+  group_by(corpus, deixis, phrase_position) %>%
+  summarise(n = n())
+#the chance gestures to overlap with a pause during at least 200 msec is around chance level PD and in the L1-L2 condition in FC. In the L1-L1 condition in FC, the chance is a bit lower but this needs further testing (high SD)
+pauses_summary %>%
+  group_by(corpus, condition) %>%
+  summarise(n = n(),
+            mean = mean(pause_dummy),
+            sd = sd(pause_dummy))
+```
+
+##pause-gesture
+```{r}
+pauses_summary <- pauses_summary %>%
+  mutate(abstract = if_else(grepl("abstract", deixis), "yes", "no")) %>%
+  filter(grepl("abstract", deixis))
+
+p = glmer(pause_dummy ~ corpus*condition + (1|ID_participant) + (1|ID_participant) + (1|ID_partner),
+           family = binomial, data = pauses_summary)
+summary(p)
+plot(allEffects(p))
+
+do.call(rbind.data.frame, as.data.frame(allEffects(p))) %>%
+  ggplot(aes(x = condition, y = fit)) +
+  geom_point(position = position_dodge(width = 0.3), size=3, color = "#00A08A") +
+  geom_line(group = 1, position = position_dodge(width = 0.3), color = "#00A08A") + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3), color= "#00A08A") +
+  facet_wrap(~corpus) +
+  ggtitle("Gesture-pause co-occurence (abstract deictic)") +
+  xlab("Condition") +
+  ylab("Proportion") +
+  theme_bw()+
+  theme(legend.position = "none",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_pauses_proportion.png", width =6, height = 3, dpi = 300)
+
+pauses_summary_subset <- pauses_summary %>%
+  filter(grepl("abstract", deixis), grepl("PD", corpus))
+
+#no effect of phrase position
+p0 = glmer(pause_dummy ~ (1|ID_participant) + (1|ID_partner),
+           family = binomial, data = pauses_summary_subset)
+p1 = update(p0,.~. + condition)
+p2 = update(p1,.~. * phrase_position)
+anova(p0, p1, p2)
+summary(p2)
+plot(allEffects(p2))
+```
+
+##peaks: inspect PD
+```{r message=FALSE, warning=FALSE}
+PD_pauses <- read_tsv("PD_pauses_overlap.tsv") %>%
+  filter(pause == 1) %>%
+  mutate(pause_overlap_duration = pmax(0, pmin(pause_t1, t1) - pmax(pause_t0, t0))) %>%
+  select(pause_duration, pause_overlap_duration, pause_t0, pause_t1, filename, ID_gesture)
+PD_gestures <- read_tsv("PD_gestures_final.tsv") %>%
+  filter(grepl("abstract", deixis))
+PD_ts_gestures <- read_tsv("PD_ts_gestures.tsv")
+
+#plot_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/03_gesture/plots_middle/"
+overlap <- data.frame()
+for (i in unique(PD_gestures$filename)) {
+  print(i)
+  file_p <- subset(PD_pauses, filename == i)
+  file_ts <- subset(PD_ts_gestures, filename == i)
+  file_g <- subset(PD_gestures, filename == i)
+  pause_peak_overlap_file <- data.frame()
+  for (j in unique(file_g$ID_gesture)) {
+    g_p <- subset(file_p, ID_gesture == j) %>%
+      select(-filename, -ID_gesture)
+    g_ts <- subset(file_ts, ID_gesture == j)
+    g_g <- subset(file_g, ID_gesture == j)
+    
+    g_ts <- g_ts %>%
+      select(time_msec, xy4_velo) %>%
+      rename(velo = xy4_velo) %>%
+      mutate(hand = "right") %>%
+      bind_rows(g_ts %>%
+                   select(time_msec, xy7_velo) %>%
+                   rename(velo = xy7_velo) %>%
+                   mutate(hand = "left")) %>%
+      mutate(peaks = "",
+             peaks = as.numeric(peaks))
+    
+    peaks <- findpeaks(g_ts$velo, nups = 5, minpeakheight = 0.3)
+    indices <- unlist(lapply(peaks[,2], generate_sequence)) 
+    g_ts$peaks[indices] <- g_ts$velo[indices]
+    
+    #ggplot()+
+    #  geom_point(data=g_ts, aes(x=time_msec, y=velo, color=hand), size=2)+
+    #  geom_point(data=g_ts, aes(x=time_msec, y=peaks), color = "black", size = 4)+
+    #  scale_color_manual(values = c("right" = "#74a892", "left" = "#c7522a")) +
+    #  geom_text(data=g_p, aes(x=pause_t0, y=-0.05), label=g_p$pause_duration, 
+    #            hjust = 0, nudge_y = -0.25, 
+    #            check_overlap = F,
+    #            size = 3) +
+    #  geom_vline(xintercept=g_p$pause_t0, size=0.2) +
+    #  geom_vline(xintercept=g_p$pause_t1, size=0.2) +
+    #  theme_bw()+
+    #  theme(legend.title=element_blank())+
+    #  xlab("Time (msec)") +
+    #  ylab("Wrist Velocity")
+  #  
+  #  ggsave(paste0(plot_dir, i, "_", j, ".png"), width = 18, height = 6, units = "cm")
+    
+    g_ts <- as.data.frame(g_ts)
+    peak_summary <- g_ts %>%
+      mutate(ID_peak= label_sequences(peaks)) %>%
+      filter(!is.na(ID_peak)) %>%
+      group_by(ID_peak) %>%
+      summarise(t0 = min(time_msec),
+                t1 = max(time_msec),
+                max = max(peaks, na.rm=T),
+                hand = hand[1]) %>%
+      arrange(t0) %>%
+      mutate(peak_next = if_else(lead(t0) <= t1 & lead(t1) >= t0, "same", NA),
+             peak_previous = if_else(lag(t0) <= t1 & lag(t1) >= t0, "same", NA),
+             overlap_seq = if_else(grepl("same", peak_next), "first", "no"),
+             overlap_seq = if_else(grepl("same", peak_previous), "last", overlap_seq ),
+             ID_peak = paste0("peak_", cumsum(overlap_seq%in% c("no", "first")))) %>%
+      select(-peak_next, -peak_previous) %>%
+      group_by(ID_peak) %>%
+      summarise(peak_t0 = min(t0),
+                peak_t1 = max(t1),
+                peak_max = max(max),
+                peak_hand = if_else(grepl("left", paste0(hand, collapse = "")) & grepl("right", paste0(hand, collapse = "")), "both", hand[1]))
+    
+    g_p <- setkey(setDT(g_p), pause_t0, pause_t1)
+    peak_summary <- setkey(setDT(peak_summary), peak_t0, peak_t1)
+    
+    pause_peak_overlap <- foverlaps(peak_summary, g_p) %>%
+      bind_rows(foverlaps(g_p, peak_summary)) %>%
+      mutate(pause = if_else(is.na(pause_duration), 0, 1),
+             peak= if_else(is.na(ID_peak), 0, 1),
+             filename=i,
+             ID_gesture=j) %>%
+      left_join(g_g)
+    
+    pause_peak_overlap_file <- rbind.data.frame(pause_peak_overlap_file, pause_peak_overlap)
+  }
+  overlap <- rbind.data.frame(overlap, pause_peak_overlap_file)
+}
+overlap <- as.data.frame(overlap)
+test <- overlap %>%
+  relocate(pause, .before = pause_duration) %>%
+  relocate(peak, .after = pause)
+write_tsv(test, "PD_peak_overlap.tsv")
+PD_peak_overlap <- read_tsv("PD_peak_overlap.tsv")
+```
+
+##peaks: pauses with peak
+```{r}
+pp <- PD_peak_overlap %>%
+  filter(pause == 1)
+
+p0 = glmer(peak ~ (1|item) + (1|ID_gesture) + (1|ID_participant) + (1|ID_partner), family = binomial, data = pp)
+p1 = update(p0,.~. + condition)
+anova(p0, p1)
+summary(p1)
+plot(allEffects(p1))
+
+do.call(rbind.data.frame, as.data.frame(allEffects(p1))) %>%
+  ggplot(aes(x = condition, y = fit)) +
+  geom_point(position = position_dodge(width = 0.3), size=3, color = "#00A08A") +
+  geom_line(group = 1, position = position_dodge(width = 0.3), color = "#00A08A") + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3), color= "#00A08A") +
+  ggtitle("Peak-pause co-occurence in PD (abstract deictic)") +
+  xlab("Condition") +
+  ylab("Proportion") +
+  theme_bw()+
+  theme(legend.position = "none",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_pauses_peaks.png", width =6, height = 3, dpi = 300)
+```
+
+##velocity: peak with and without pause
+```{r}
+ppv <- PD_peak_overlap %>%
+  filter(peak == 1) %>%
+  mutate(pause = as.factor(pause))
+p0 = lmer(peak_max ~ (1|ID_participant) + (1|ID_partner), data = ppv)
+p1 = update(p0,.~. + condition)
+p2 = update(p1,.~. + pause)
+p3 = update(p2,.~. + pause*condition)
+anova(p0, p1)
+summary(p3)
+plot(allEffects(p3))
+
+do.call(rbind.data.frame, as.data.frame(allEffects(p3))) %>%
+  ggplot(aes(x = condition, y = fit, color = pause, group = pause)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(values = c("#F98400", "#00A08A"), name = "Pause") +
+
+  ggtitle("Velocity of peak during pause") +
+  xlab("Condition") +
+  ylab("Peak Velocity") +
+  theme_bw()+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_pauses_peaks_velo.png", width =6, height = 3, dpi = 300)
+```
+
+##localizing expressions: PD
+```{r}
+PD_gestures <- read_tsv("PD_gestures_final.tsv") %>%
+  filter(!is.na(ID_gesture))
+PD_speech <- read_tsv("PD_speech.tsv")
+
+overlap <- data.frame()
+for (i in unique(PD_gestures$filename)) {
+  gestures_in_file <- setkey(setDT(subset(PD_gestures, filename==i)), t0, t1)
+  speech_in_file <- setkey(setDT(subset(PD_speech, filename==i)), t0, t1)
+  output <- foverlaps(gestures_in_file, speech_in_file)
+  overlap <- rbind.data.frame(overlap, output)
+}
+
+
+pattern_loc = "(kant|onder|boven|op|voor|achter|midden|links|linker|rechts|rechter|verte|naast|
+côté|cote|coté|sous|desous|sur|dessus|devant|derrière|centre|gauche|droite|plan|fond|loin)"
+
+ds <- overlap %>%
+  filter(grepl("abstract", deixis)) %>%
+  mutate(loc = if_else(grepl(pattern_loc, speech_clean), 1, 0)) %>%
+  group_by(i.filename, ID_gesture, condition, ID_participant, ID_partner, item, language) %>%
+  summarise(loc = sum(loc),
+            loc = if_else(loc >= 1 , 1, 0),
+            speech_paste = paste0(speech_clean, collapse = ""),
+            size = size[1],
+            phrase_position = phrase_position[1],
+            icon = icon[1]) %>%
+  rename(filename = i.filename)
+
+p0 = glmer(loc ~ (1|item) + (1|ID_participant) + (1|ID_partner), family = binomial, data = ds)
+p1 = update(p0,.~. + condition)
+
+anova(p0, p1)
+summary(p1)
+plot(allEffects(p1))
+
+do.call(rbind.data.frame, as.data.frame(allEffects(p1))) %>%
+  ggplot(aes(x = condition, y = fit)) +
+  geom_point(position = position_dodge(width = 0.3), size=3, color = "#00A08A") +
+  geom_line(group = 1, position = position_dodge(width = 0.3), color = "#00A08A") + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3), color= "#00A08A") +
+  ggtitle("Co-occurence of abstract deictic with localizing expression in speech") +
+  xlab("Condition") +
+  ylab("Proportion") +
+  theme_bw()+
+  theme(legend.position = "none",
+        strip.background = element_rect(colour="black", fill="white"))
+ggsave("03_localizing.png", width =6, height = 3, dpi = 300)
+```
+
+
+```{r}
+PD_pauses <- read_tsv("PD_pauses_overlap.tsv")
+
+```
+
+```{r}
+peak_overlap_model <- peak_overlap %>%
+  mutate(peak_num = if_else(grepl("no", peak), 0, 1))
+
+p1 <- glmer(peak_num ~ condition * icon + (1|ID_participant) + (1|ID_partner), family = binomial, data = peak_overlap_model)
+summary(p1)
+plot(allEffects(p1))
+
+pv1 <- lmer(peak_max ~ condition * icon + (1|ID_participant) + (1|ID_partner), data = peak_overlap_model)
+summary(pv1)
+plot(allEffects(pv1))
+```
+
+
+
+
+```{r merge deixis and gesture data, eval=FALSE, include=FALSE}
+deixis <- deixis %>%
+  inner_join(FC_gestures) %>%
+  filter(grepl("abstract", deixis))
+write_tsv(deixis, "FC_deixis.tsv")
+```
+
+```{r}
+t <- read_tsv("FC_deixis.tsv") %>%
+  group_by(ID_participant, ID_partner, ID_group, ID_dyad, condition) %>%
+  summarise(deixis_n = n(),
+            given = length(grep("given", status)),
+            new = length(grep("new", status)),
+            accessible = length(grep("accessible", status))) #add all variables
+
+write_tsv(t, "test.tsv")
+t <- read_tsv("test.tsv")
+
+m_status <- lmer(given ~ condition + (1|ID_participant), data = t)
+summary(m_status)
+plot(allEffects(m_status)) #this does not work, why?
+
+#how to present data? Pie chart, effects plot? Presentation different from statistics?
+```
+
+##semantic transparency: FC
+```{r}
+pal_sem1 <- c(
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  "#5BBCD6", #metaphor
+  "#FF0000", #concrete
+  "#bdbab7") #emblem
+
+
+read_tsv("FC_deixis.tsv") %>%
+  filter(!is.na(condition) & !grepl("L2-L1", condition)) %>%
+  group_by(condition) %>%
+  mutate(total = n()) %>%
+  group_by(condition, sem1) %>%
+  summarise(perc = n()/total[1]) %>%
+  mutate(sem1 = as.factor(sem1),
+         sem1 = factor(sem1, levels = c("envir",
+                       "geo", "etym", "time", 
+                       "none"))) %>%
+  mutate(labels = scales::percent(perc)) %>%
+  ggplot(aes(x = "", y = perc, fill = sem1)) +
+  geom_col() +
+  facet_grid(~condition, switch="y") +
+  geom_text(aes(x =  1.1, label = labels),
+             color = "white", size = 4,
+             position = position_stack(vjust = 0.6),
+             show.legend = FALSE,) +
+  scale_fill_manual(values = pal_sem1) +
+  coord_polar(theta = "y") +
+  theme_classic() +
+  guides(fill = guide_legend(title = "Semantics")) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_blank(),
+        axis.line.x = element_blank()) +
+  labs(x="", y="")
+ggsave("03_pie_semantics1.png", width= 6, height = 4, dpi = 300)
+```
+
+```{r}
+pal_status <- c(
+  "#F98400",
+  "#4B0082",
+  "#FF0000")
+
+
+read_tsv("FC_deixis.tsv") %>%
+  filter(!is.na(condition) & !grepl("L2-L1", condition)) %>%
+  #mutate(sem2 = if_else(grepl("shift", sem2), "none", sem2),
+  #       status = paste0(status, " + ", sem2)) %>%
+  group_by(condition) %>%
+  mutate(total = n()) %>%
+  group_by(condition, status) %>%
+  summarise(perc = n()/total[1]) %>%
+  mutate(status = as.factor(status)
+         #,sem2 = factor(sem2, levels = c("contrast",
+        #             "shift", "none"))
+        ) %>%
+  mutate(labels = scales::percent(perc)) %>%
+  ggplot(aes(x = "", y = perc, fill = status)) +
+  geom_col() +
+  facet_grid(~condition, switch="y") +
+  geom_text(aes(x =  1.1, label = labels),
+             color = "white", size = 4,
+             position = position_stack(vjust = 0.6),
+             show.legend = FALSE,) +
+  scale_fill_manual(values = pal_status) +
+  coord_polar(theta = "y") +
+  theme_classic() +
+  guides(fill = guide_legend(title = "Information Status")) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank(),
+        panel.border = element_blank(),
+        axis.line.y = element_blank(),
+        axis.line.x = element_blank()) +
+  labs(x="", y="")
+ggsave("03_pie_status.png", width= 6, height = 4, dpi = 300)
+```
+##QUALITATIVE ANALYSIS
+###illustration methods
+```{r}
+pal_hand<- c(
+  "#5BBCD6", #both
+  "#FF0000", #left
+  "#00A08A") #right
+
+pal_sem <- c(
+  "#00A08A",
+  "#F98400", 
+  "#5BBCD6",
+  "#bdbab7",
+  "#EE82EE", 
+  "#4B0082", 
+  "#FF0000") 
+
+
+read_tsv("PD_ts_gestures.tsv") %>%
+  #inner_join(PD_participants) %>%
+  select(filename, x4, y4, ID_gesture) %>%
+  mutate(hand_estimation = "right") %>%
+  rename(x = "x4", y = "y4") %>%
+  bind_rows(read_tsv("PD_ts_gestures.tsv") %>%
+              select(filename, x7, y7, ID_gesture) %>%
+              mutate(hand_estimation = "left") %>%
+              rename(x = "x7", y = "y7")) %>%
+  filter(grepl("leuven6a_run2", filename)) %>%
+  mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture)),
+         sequence = if_else(ID_num < 8, "A", ""),
+         sequence = if_else(ID_num > 7 & ID_num < 23, "B", sequence),
+         sequence = if_else(ID_num > 22 & ID_num < 40, "C", sequence),
+         sequence = if_else(ID_num > 39, "D", sequence)) %>%
+  filter(grepl("A", sequence)) %>%
+  select(ID_num, ID_gesture, x, y, sequence, hand_estimation) %>%
+  left_join(read_tsv("PD_gestures_final.tsv") %>%
+               select(filename, ID_gesture, hand, deixis) %>%
+              mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture))) %>%
+              #mutate(deixis = if_else(grepl("abstract", deixis), "yes", "no")) %>%
+               filter(grepl("leuven6a_run2", filename)) %>%
+    select(ID_gesture, hand, deixis)) %>%
+  mutate(hand_selection = paste0(hand_estimation, hand)) %>%
+  filter(!grepl("rightleft", hand_selection)) %>%
+  filter(!grepl("leftright", hand_selection)) %>%
+  ggplot(aes(x, y, color = ID_gesture)) +
+  geom_point(size = 0.8) +
+  scale_color_manual(values = pal_sem, labels = c("A", "B", "C", "D", "E", "F", "G"), name = "hands") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.03, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.03, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="top") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1)
+ggsave("03_EXEMPLE_method.png", dpi=300, width = 4, height = 4)
+
+```
+###leuven6a_run2
+```{r}
+pal_combi <- c("#979797",
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  "#FAC898", #icon + abstract (lighter shade of orange)
+  #"#F98400", #icon + concrete (orange)
+  "#5BBCD6", #metaphor
+  #"#EE82EE", #metaphor + abstract (violet)
+  #"#4B0082", #metaphor + concrete (indigo)
+  "#ff8787" #abstract
+  #"#FF0000", #concrete
+  )
+
+
+read_tsv("PD_ts_gestures.tsv") %>%
+  #inner_join(PD_participants) %>%
+  select(filename, x4, y4, ID_gesture) %>%
+  mutate(hand_estimation = "right") %>%
+  rename(x = "x4", y = "y4") %>%
+  bind_rows(read_tsv("PD_ts_gestures.tsv") %>%
+              select(filename, x7, y7, ID_gesture) %>%
+              mutate(hand_estimation = "left") %>%
+              rename(x = "x7", y = "y7")) %>%
+  filter(grepl("leuven6a_run2", filename)) %>%
+  mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture)),
+         sequence = if_else(ID_num < 8, "A", ""),
+         sequence = if_else(ID_num > 7 & ID_num < 22, "B", sequence),
+         sequence = if_else(ID_num > 21 & ID_num < 40, "C", sequence),
+         sequence = if_else(ID_num > 39, "D", sequence)) %>%
+  #filter(grepl("B", sequence)) %>%
+  select(ID_num, ID_gesture, x, y, sequence, hand_estimation) %>%
+  left_join(read_tsv("PD_gestures_final.tsv") %>%
+              mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture))) %>%
+              #mutate(deixis = if_else(grepl("abstract", deixis), "yes", "no")) %>%
+               filter(grepl("leuven6a_run2", filename))) %>%
+  mutate(dim_cumul = paste(nonref, icon, metaph, deixis, conv, sep = "-"),
+         dim = if_else(dim_cumul == "no-no-no-abstract-no" , "abstract", "rest"),
+         dim = if_else(dim_cumul == "no-no-no-concrete-no" , "concrete", dim),
+         dim = if_else(dim_cumul == "no-no-no-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "yes-no-no-no-no" , "non-ref", dim),
+         dim = if_else(dim_cumul == "no-yes-no-no-no" , "icon", dim),
+         dim = if_else(dim_cumul == "no-yes-no-abstract-no" , "icon + abstract", dim),
+         dim = if_else(dim_cumul == "no-yes-no-concrete-no" , "icon + concrete", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-no" , "metaphor", dim),
+         dim = if_else(dim_cumul == "no-no-yes-abstract-no" , "metaphor + abstract", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-no-abstract-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-yes-concrete-no" , "metaphor + concrete", dim),
+         dim = if_else(sequence != "B", "other gesture units", dim),
+         dim = if_else(ID_num == 18, "icon", dim),
+         dim = as.factor(dim),
+         dim = factor(dim, levels = c("other gesture units", "non-ref",
+                       "icon", "icon + abstract", "icon + concrete", 
+                       "metaphor", "metaphor + abstract", "metaphor + concrete",
+                       "abstract", "concrete",
+                       "emblem"))) %>%
+  #mutate(hand_selection = paste0(hand_estimation, hand)) %>%
+  #filter(!grepl("rightleft", hand_selection)) %>%
+  #filter(!grepl("leftright", hand_selection)) %>%
+  ggplot(aes(x, y, color = dim, alpha = ifelse(dim!="other gesture units", 1, 0.9))) +
+  geom_point(size = 1, shape = 19) +
+  scale_color_manual(values = pal_combi, name = "Gesture functions") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.04, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.04, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="none") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1)
+ggsave("figure10_plot.png", dpi=300, width = 5, height = 5)
+
+```
+
+###0710_1400_ca
+```{r}
+pal_combi <- c(#"#979797",
+  "#00A08A", #non-referential (green)
+  "#FFD800", #icon (yellow)
+  #"#FAC898", #icon + abstract (lighter shade of orange)
+  #"#F98400", #icon + concrete (orange)
+  "#5BBCD6", #metaphor
+  "#EE82EE", #metaphor + abstract (violet)
+  #"#4B0082", #metaphor + concrete (indigo)
+  "#ff8787", #abstract
+  #"#FF0000", #concrete
+  "#bdbab7" #emblem
+  )
+
+p_L2 <- read_tsv("FC_ts_gestures.tsv") %>%
+  filter(grepl("0710_1400_C", ID_participant)) %>%
+  filter(grepl("0710_1400_A", ID_partner)) %>%
+  select(ID_participant, ID_partner, x4, y4, ID_gesture) %>%
+  mutate(hand_estimation = "right") %>%
+  rename(x = "x4", y = "y4") %>%
+  bind_rows(read_tsv("FC_ts_gestures.tsv") %>%
+              filter(grepl("0710_1400_C", ID_participant)) %>%
+              filter(grepl("0710_1400_A", ID_partner)) %>%
+              select(ID_participant, ID_partner, x7, y7, ID_gesture) %>%
+              mutate(hand_estimation = "left") %>%
+              rename(x = "x7", y = "y7")) %>%
+  mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture))) %>%
+  select(ID_num, ID_gesture, x, y, hand_estimation) %>%
+  inner_join(read_tsv("FC_gestures_final.tsv") %>%
+               filter(grepl("0710_1400_C", ID_participant)) %>%
+              filter(grepl("0710_1400_A", ID_partner))) %>%
+  mutate(dim_cumul = paste(nonref, icon, metaph, deixis, conv, sep = "-"),
+         dim = if_else(dim_cumul == "no-no-no-abstract-no" , "abstract", "rest"),
+         dim = if_else(dim_cumul == "no-no-no-concrete-no" , "concrete", dim),
+         dim = if_else(dim_cumul == "no-no-no-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "yes-no-no-no-no" , "non-ref", dim),
+         dim = if_else(dim_cumul == "no-yes-no-no-no" , "icon", dim),
+         dim = if_else(dim_cumul == "no-yes-no-abstract-no" , "icon + abstract", dim),
+         dim = if_else(dim_cumul == "no-yes-no-concrete-no" , "icon + concrete", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-no" , "metaphor", dim),
+         dim = if_else(dim_cumul == "no-no-yes-abstract-no" , "metaphor + abstract", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-no-abstract-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-yes-concrete-no" , "metaphor + concrete", dim),
+         dim = if_else(ID_num == 7, "icon", dim),
+         dim = as.factor(dim),
+         dim = factor(dim, levels = c("non-ref",
+                       "icon", "icon + abstract", "icon + concrete", 
+                       "metaphor", "metaphor + abstract", "metaphor + concrete",
+                       "abstract", "concrete",
+                       "emblem"))) %>%
+  mutate(hand_selection = paste0(hand_estimation, hand)) %>%
+  filter(!grepl("rightleft", hand_selection)) %>%
+  filter(!grepl("leftright", hand_selection))
+
+p_L2 %>%
+  ggplot(aes(x, y, color = dim, alpha = ifelse(dim=="icon"|dim=="metaphor"|dim=="metaphor + abstract", 1, 0.9))) +
+  geom_point(size = 0.5, shape = 19) +
+  scale_color_manual(values = pal_combi, name = "Gesture functions") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.04, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.04, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="none") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1) +
+  scale_y_continuous(limits = c(-0.3, 1.5)) +
+  scale_x_continuous(limits = c(-1.1, 1.1))
+
+ggsave("figure_L2_repr_plot.png", dpi=300, width = 5, height = 5)
+ 
+p_L2 %>%
+  ggplot(aes(x, y, color = dim, alpha = ifelse(ID_num>2&ID_num<7, 1, 0.9))) +
+  geom_point(size = 1, shape = 19) +
+  scale_color_manual(values = pal_combi, name = "Gesture functions") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.04, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.04, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="none") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1)
+  #scale_y_continuous(limits = c(-0.1, 1.5)) +
+  #scale_x_continuous(limits = c(-1, 1))
+
+ggsave("figure13_L2_plot.png", dpi=300, width = 5, height = 5)
+```
+
+
+###0710_1400_cb
+```{r}
+pal_combi <- c(#"#979797",
+  "#00A08A", #non-referential (green)
+  #"#FFD800", #icon (yellow)
+  #"#FAC898", #icon + abstract (lighter shade of orange)
+  #"#F98400", #icon + concrete (orange)
+  "#5BBCD6", #metaphor
+  "#EE82EE", #metaphor + abstract (violet)
+  #"#4B0082", #metaphor + concrete (indigo)
+  "#ff8787", #abstract
+  "#FF0000", #concrete
+  "#bdbab7" #emblem
+  )
+
+p_L1 <- read_tsv("FC_ts_gestures.tsv") %>%
+  filter(grepl("0710_1400_C", ID_participant)) %>%
+  filter(grepl("0710_1400_B", ID_partner)) %>%
+  select(ID_participant, ID_partner, x4, y4, ID_gesture) %>%
+  mutate(hand_estimation = "right") %>%
+  rename(x = "x4", y = "y4") %>%
+  bind_rows(read_tsv("FC_ts_gestures.tsv") %>%
+              filter(grepl("0710_1400_C", ID_participant)) %>%
+              filter(grepl("0710_1400_B", ID_partner)) %>%
+              select(ID_participant, ID_partner, x7, y7, ID_gesture) %>%
+              mutate(hand_estimation = "left") %>%
+              rename(x = "x7", y = "y7")) %>%
+  mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture))) %>%
+  select(ID_num, ID_gesture, x, y, hand_estimation) %>%
+  inner_join(read_tsv("FC_gestures_final.tsv") %>%
+               filter(grepl("0710_1400_C", ID_participant)) %>%
+              filter(grepl("0710_1400_B", ID_partner))) %>%
+  mutate(dim_cumul = paste(nonref, icon, metaph, deixis, conv, sep = "-"),
+         dim = if_else(dim_cumul == "no-no-no-abstract-no" , "abstract", "rest"),
+         dim = if_else(dim_cumul == "no-no-no-concrete-no" , "concrete", dim),
+         dim = if_else(dim_cumul == "no-no-no-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "yes-no-no-no-no" , "non-ref", dim),
+         dim = if_else(dim_cumul == "no-yes-no-no-no" , "icon", dim),
+         dim = if_else(dim_cumul == "no-yes-no-abstract-no" , "icon + abstract", dim),
+         dim = if_else(dim_cumul == "no-yes-no-concrete-no" , "icon + concrete", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-no" , "metaphor", dim),
+         dim = if_else(dim_cumul == "no-no-yes-abstract-no" , "metaphor + abstract", dim),
+         dim = if_else(dim_cumul == "no-no-yes-no-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-no-abstract-yes" , "emblem", dim),
+         dim = if_else(dim_cumul == "no-no-yes-concrete-no" , "metaphor + concrete", dim),
+         #dim = if_else(ID_num == 7, "icon", dim),
+         dim = as.factor(dim),
+         dim = factor(dim, levels = c("non-ref",
+                       "icon", "icon + abstract", "icon + concrete", 
+                       "metaphor", "metaphor + abstract", "metaphor + concrete",
+                       "abstract", "concrete",
+                       "emblem"))) %>%
+  mutate(hand = if_else(ID_num == 1 |ID_num == 2, "right", hand),
+         hand_selection = paste0(hand_estimation, hand)) %>%
+  filter(!grepl("rightleft", hand_selection)) %>%
+  filter(!grepl("leftright", hand_selection)) %>%
+  filter(ID_num!=18&ID_num!=19)
+
+p_L1 %>%
+  ggplot(aes(x, y, color = dim, alpha = ifelse(dim=="icon"|dim=="metaphor"|dim=="metaphor + abstract", 1, 0.9))) +
+  geom_point(size = 0.5, shape = 19) +
+  scale_color_manual(values = pal_combi, name = "Gesture functions") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.04, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.04, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="none") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  #scale_y_continuous(limits = c(-0.3, 1.5)) +
+  #scale_x_continuous(limits = c(-1.1, 1.1)) +
+  coord_equal(ratio = 1)
+
+ggsave("figure13_L1_repr_plot.png", dpi=300, width = 5, height = 5)
+ 
+p1 <- p_L1 %>%
+  ggplot(aes(x, y, color = dim, alpha = ifelse(ID_num<=6, 1, 0.9))) +
+  geom_point(size = 1, shape = 19) +
+  scale_color_manual(values = pal_combi, name = "Gesture functions") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.04, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.04, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  #facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="none") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1)
+  #scale_y_continuous(limits = c(-0.1, 1.5)) +
+  #scale_x_continuous(limits = c(-1, 1))
+
+ggsave("figure12_L1_plot.png", dpi=300, width = 5, height = 5)
+```
+
+```{r}
+library(ggpubr)
+ggarrange(p1, p2)
+ggsave("figure12_plot.png", dpi=300, width = 10, height = 5)
+```
+###saving
+```{r}
+read_tsv("FC_ts_gestures.tsv") %>%
+  #inner_join(PD_participants) %>%
+  select(ID_participant, ID_partner, x4, y4, ID_gesture) %>%
+  #mutate(hand = "right") %>%
+  rename(x = "x4", y = "y4") %>%
+  bind_rows(read_tsv("FC_ts_gestures.tsv") %>%
+              select(ID_participant, ID_partner, x7, y7, ID_gesture) %>%
+              #mutate(hand = "right") %>%
+              rename(x = "x7", y = "y7")) %>%
+  filter(grepl("0710_1400_C", ID_participant) & grepl("0710_1400_A", ID_partner)) %>%
+  mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture)),
+         sequence = if_else(ID_num < 6, "A", ""),
+         sequence = if_else(ID_num > 5 & ID_num < 10, "B", sequence),
+         sequence = if_else(ID_num > 9 & ID_num < 14, "C", sequence),
+         sequence = if_else(ID_num > 13, "D", sequence)) %>%
+  select(ID_num, x, y, sequence) %>%
+  left_join(read_tsv("FC_gestures_final.tsv") %>%
+               select(ID_participant, ID_partner, ID_gesture, hand, deixis) %>%
+              mutate(ID_num = as.numeric(gsub("sem_", "", ID_gesture))) %>%
+              #mutate(deixis = if_else(grepl("abstract", deixis), "yes", "no")) %>%
+               filter(grepl("0710_1400_C", ID_participant) & grepl("0710_1400_A", ID_partner)) %>%
+    select(ID_num, hand, deixis)) %>%
+  ggplot(aes(x, y, color = deixis)) +
+  geom_point(size = 0.2) +
+  #scale_color_manual(values = c("#1984c5", "#e6d800"), name = "Condition") +
+  annotate("pointrange", x = 0, y = 0, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("pointrange", x = 0, y = 1, xmin = -0.5, xmax = 0.5,colour = "black", size = 1) +
+  annotate("text", x = 0.2, y = 0.2, label = "Hip") +
+  annotate("text", x = 0.2, y = 1.2, label = "Neck") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  facet_wrap(~sequence) +
+  theme_classic() +
+  theme(legend.position="right") +
+  ggtitle("Gesture trajectories") +
+  xlab("X (scaled)") +
+  ylab("Y (scaled)") +
+  coord_equal(ratio = 1)
+ggsave("03_EXEMPLE_FC_all.png", dpi=300, width = 12, height = 8)
+```
+
+```{r}
+read_tsv("PD_speech.tsv") %>%
+  reframe(total = sum(s_interaction_dur_sec))
+```
+

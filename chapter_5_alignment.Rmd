@@ -1,0 +1,1914 @@
+---
+title: "Chapter 4"
+author: "Valentijn Prové"
+date: "2024-03-19"
+output: html_document
+---
+#preparations
+##packages
+```{r packages, message=FALSE, warning=FALSE}
+library(elan)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(readbulk)
+library(kza) #smoothing filter
+library(DescTools) #overlaps
+library(data.table) #overlaps
+library(ggplot2) #plotting
+library(ggpubr)
+library(plotly) #plotting
+library(ggbeeswarm) #plotting
+library(ggrepel) #pie chart
+library(RColorBrewer) # colors
+library(wesanderson)
+library(car) #regression
+library(lmerTest) #regression
+library(lme4) #regression
+library(effects) #regression
+library(pracma) #for overlaps
+library(koRpus)
+library(koRpus.lang.nl)
+library(imputeTS)
+library(crqa)
+```
+##directories
+```{r}
+setwd("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying")
+data_ch3 <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/03_gesture/"
+```
+##custom functions
+```{r custom functions}
+split_utterances <- function(utterances_df) {
+  words <- unlist(strsplit(utterances_df$speech_clean, "\\s+"))
+  speakers <- rep(utterances_df$ID_participant, sapply(strsplit(utterances_df$speech_clean, "\\s+"), length))
+  data.frame(word = words, ID_participant = speakers)
+}
+```
+#DATA
+##info
+```{r}
+info_dyad <- read_tsv(paste0(data_ch3, "FC_multimod_summary.tsv")) %>%
+              mutate(condition = fct_recode(as.factor(condition), "L2-L1" = "L1-L2")) %>%
+                       select(ID_group, ID_dyad, condition) %>% distinct()
+
+info_part <- read_tsv(paste0(data_ch3, "FC_multimod_summary.tsv")) %>%
+                       select(ID_group, ID_dyad, ID_participant, ID_partner, condition) %>% distinct()
+```
+##liking
+```{r}
+test <- read.csv("data/liking.csv", sep = ";") %>%
+  mutate(ID_group = as.character(str_extract_all(ID_participant, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = toupper(ID_participant),
+         ID_partner =  toupper(ID_partner),
+         ID_dyad = paste0(ID_group, "_",
+                             if_else(grepl("A", ID_participant) & grepl("B", ID_partner), "AB", ""), 
+                             if_else(grepl("A", ID_participant) & grepl("C", ID_partner), "CA", ""),
+                             if_else(grepl("B", ID_participant) & grepl("C", ID_partner), "CB", ""),
+                             if_else(grepl("B", ID_participant) & grepl("A", ID_partner), "AB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("B", ID_partner), "CB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("A", ID_partner), "CA", ""))) %>%
+  arrange(ID_participant, ID_partner) %>%
+  left_join(info_part)
+
+test %>%
+  group_by(condition) %>%
+  reframe(mean = mean(partner_liking))
+
+summary(test$partner_liking)
+
+liking_dyad <- test %>%
+  group_by(ID_dyad, ID_group) %>%
+  reframe(liking_x = partner_liking[1],
+          liking_y = partner_liking[2],
+          condition = condition[1]) %>%
+  mutate(condition = if_else(grepl("L2-L1", condition), "L1-L2", condition))
+
+cor.test(liking_dyad$liking_x, liking_dyad$liking_y)
+
+m = lmer(liking_x ~ liking_y + (1|ID_group), data = liking_dyad)
+summary(m)
+plot(allEffects(m))
+  
+
+ggplot(test, aes(condition, partner_liking, color = condition)) +
+  geom_boxplot() +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  stat_summary(fun.y = mean, geom="point", shape=4, size = 5, color="black") +
+  geom_hline(yintercept = 84, linetype = "dashed", size = 0.5) +
+  annotate("text", x = 3, y = 86, label = "maximum = 84") +
+  theme_classic() +
+  xlab("Condition") +
+  ylab("Social Attraction") +
+  theme(legend.position = "none")
+ggsave("fig_2_social_attraction.png", height = 4, width = 4)
+
+m = lmer(partner_liking ~ condition + (1|ID_participant) + (1|ID_partner), data = test)
+summary(m)
+plot(allEffects(m))
+  
+
+liking <- read.csv("data/liking.csv", sep = ";") %>%
+  mutate(ID_group = as.character(str_extract_all(ID_participant, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = toupper(ID_participant),
+         ID_partner =  toupper(ID_partner),
+         ID_dyad = paste0(ID_group, "_",
+                             if_else(grepl("A", ID_participant) & grepl("B", ID_partner), "AB", ""), 
+                             if_else(grepl("A", ID_participant) & grepl("C", ID_partner), "CA", ""),
+                             if_else(grepl("B", ID_participant) & grepl("C", ID_partner), "CB", ""),
+                             if_else(grepl("B", ID_participant) & grepl("A", ID_partner), "AB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("B", ID_partner), "CB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("A", ID_partner), "CA", ""))) %>%
+  arrange(ID_participant, ID_partner) %>%
+  group_by(ID_dyad) %>%
+  reframe(liking_prod = partner_liking[1]*partner_liking[2],
+          liking_diff = max(partner_liking)-min(partner_liking))
+liking$liking_prod <- as.vector(scale(liking$liking_prod))
+
+liking %>%
+  left_join(info_dyad) %>%
+  group_by(condition) %>%
+  reframe(mean = mean(liking_prod))
+
+rapport <- liking %>%
+  left_join(info_dyad)
+summary(rapport)
+
+m = lmer(liking_prod ~ condition + (1|ID_group), data = rapport)
+summary(m)
+plot(allEffects(m))
+
+liking <- liking %>%
+  arrange(liking_prod) %>%
+  mutate(rapport_cat = as.factor(rep(c("low", "medium", "high"), each = 23)),
+         rapport_cat = fct_relevel(rapport_cat, "low", "medium", "high"))
+```
+
+##content words
+```{r}
+verbalign<- read.delim("data/result_lexical_alignment.txt") %>%
+  mutate(ID_participant = gsub(" imitates.*.txt", "\\1", X),
+         ID_participant = gsub("out_", "\\1", ID_participant),
+         ID_participant = toupper(gsub("[a-c][a-c]_[1-2]", "\\1", ID_participant)),
+         ID_partner = gsub(".*imitates ", "\\1", X),
+         ID_partner = gsub(".txt", "\\1", ID_partner),
+         ID_partner= toupper(gsub("[a-c][a-c]_[1-2]", "\\1", ID_partner))) %>%
+  select(-X) %>%
+  rename("function_word" = functie,
+         "content_word" = inhoud) %>%
+  left_join(info_part) %>%
+  group_by(ID_participant) %>%
+  mutate(direction = if_else(condition[1] != condition[2] && content_word[grepl("L1-L1", condition)] < content_word[grepl("L1-L2", condition)], "marked", "unmarked",))
+
+verbalign_random <- verbalign %>%
+  bind_rows(read.csv("data/vergelijk_real_random.csv", sep = ";") %>%
+                       filter(grepl("random", type)) %>%
+                       rename("function_word" = functie, "content_word" = inhoud, "condition" = type) %>%
+                       mutate(ID_participant = info_part$ID_participant,
+                              ID_partner = info_part$ID_partner,
+                              ID_dyad = info_part$ID_dyad)) %>%
+  mutate(condition = as.factor(condition),
+         condition = fct_relevel(condition, "random"))
+```
+##mattr
+```{r}
+FC_elan_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/elan/"
+#list all the files in the elan directory
+FC_elan_files <- list.files(FC_elan_dir, pattern = ".eaf$")
+#read into table where every row corresponds to an annotation
+FC_all_ann <- efileAnnotations(paste0(FC_elan_dir, FC_elan_files))
+FC_all_ann_ANN <- subset(FC_all_ann, atype == "ANN")
+```
+
+```{r}
+# Regular expression pattern to match all function words (lowercase)
+## lidwoorden
+##voornaamwoorden
+pattern <- "aan|achter|bij|binnen|boven|buiten|door|in|langs|met|na|naar|om|onder|op|over|per|tegen|tijdens|tot|uit|van|voor|zonder|ik|k|jij|je|u|u|hij|ie|zij|ze|ze|het|'t|wij|we|we|jullie|mij|me|m'n|mn|jou|je|je|hem|haar|ons|hun|hun|hen|ze|mijn|m'n|mn|jouw|je|je|uw|uw|zijn|z'n|zn|haar|r|ons|onze|zich|zich|ze|ze|deze|die|dit|dat|da|wie|wie|wat|iemand|niemand|iets|niets|alles|men|ieder|iedereen|elk|elke|welke|welke|ben|bent|is|zijn|was|waren|geweest|heb|hebt|heeft|hebben|had|hadden|gehad|zal|zult|zal|zullen|zou|zouden|word|wordt|worden|werd|werden|geworden|doe|doet|doen|deed|deden|gedaan|kan|kunt|kan|kunnen|kon|konden|gekund|mag|mag|mogen|mocht|mochten|gemogen|moet|moet|moeten|moest|moesten|gemoeten|wil|wilt|wil|willen|wilde|wilden|gewild|hoef|hoeft|hoeven|hoefde|hoefden|gehoeven|en|maar|of|want|dus|als|omdat|omdat|hoewel|hoewel|terwijl|toen|wanneer|zodat|zodra|dat|da|indien|de|de|het|het|een|n|niet|niet|niet|geen|toch|toch|wel|wel|nou|nou|even|eens|alleen|zelfs|ook|al|nog|pas|maar|mja|ja|nee|neej|neej|nie|nee|wel|wel|tja|'s|'t|'k"
+function_words <- paste0("\\b(", pattern, ")\\b")
+
+```
+
+```{r}
+interjections <- "\\b(ja|nee|amai|wow|wauw|yeah|ai|oh|ah|eh|ehm|mh|hm*|allez|he|oei|ok|oke|okee)\\b"
+FC_content <- FC_all_ann_ANN %>%
+  filter(grepl("(A|B|C)$", TIER_ID)) %>%
+  mutate(ID_group = as.character(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = paste0(ID_group, "_", substring(TIER_ID, 0, 1)),
+         ID_partner = paste0(ID_group, "_",
+                             if_else(grepl("ab.eaf", filename) & grepl("A", ID_participant), "B", ""), 
+                             if_else(grepl("ab.eaf", filename) & grepl("B", ID_participant), "A", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("B", ID_participant), "C", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("C", ID_participant), "B", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("A", ID_participant), "C", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("C", ID_participant), "A", "")),
+         ID_dyad = as.character(toupper(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]_[a-c][a-c]")))) %>%
+  select(t0, t1, VALUE, ID_participant, ID_partner, ID_dyad) %>%
+  mutate(IP_ID = paste(ID_participant, ID_partner, t0, t1, sep = ("_")),
+         clarity = if_else(grepl("(\\@|\\(.*\\))", VALUE, perl=T), "unclear", "ok"), #unclear if laughter or not transcribed
+         speech_clean = gsub("(\\@|\\(.*\\))", "\\1", VALUE, perl=T),
+         speech_clean = gsub("\\(([^\\)]*?)\\)", "\\1", speech_clean, perl=T),
+         speech_clean = gsub(interjections, "", speech_clean, ignore.case = T),
+         speech_clean = gsub(function_words, "", speech_clean, ignore.case = T),
+         speech_clean = gsub("@", "\\1", speech_clean, perl=T),#delete laughter/meta-descriptions/unclear words) 
+         speech_clean = gsub("euhm *", "\\1", speech_clean, perl = T), #replace euhm for syllable count as 1
+         word_count = lengths(strsplit(speech_clean, "\\W+"))) %>%
+  arrange(ID_dyad, t0)
+
+write_tsv(FC_content, "FC_content_MATTR.tsv")
+FC_content <- read_tsv("FC_content_MATTR.tsv")
+```
+###individual: calculations
+```{r}
+FC_content <- read_tsv("FC_content_MATTR.tsv") %>%
+  mutate(ID_loop = paste0(ID_participant, ID_dyad))
+
+mattr_10 <- data.frame()
+mattr_ts_10 <- data.frame()
+mattr_30 <- data.frame()
+mattr_ts_30 <- data.frame()
+mattr_100 <- data.frame()
+mattr_ts_100 <- data.frame()
+
+for (i in unique(FC_content$ID_loop)) {
+print(i)
+t <- subset(FC_content, ID_loop == i)
+
+# Apply the function to the original data frame
+word_df <- split_utterances(t) %>%
+  filter(!grepl("^$", word)) %>%
+  filter(!is.na(word)) %>%
+  mutate(token = seq_along(word))
+cat(word_df$word,file="mattr_dyad.txt",sep="\n")
+
+(tokenized.text <- koRpus::tokenize(
+    "mattr_dyad.txt",
+    lang="nl",
+    doc_id="sample"
+))
+
+
+result <- MATTR(tokenized.text, window = 10, char=TRUE)
+
+mattr_10<- rbind.data.frame(mattr_10, data.frame("value" = result@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+                           rename("ID_dyad" = dyad) %>%
+                           left_join(info_part))
+
+mattr_ts_10 <- rbind.data.frame(mattr_ts_10, word_df %>%
+  inner_join(data.frame(result@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1])%>%
+  left_join(info_part))
+###
+result <- MATTR(tokenized.text, window = 30, char=TRUE)
+
+mattr_30<- rbind.data.frame(mattr_30, data.frame("value" = result@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+                           rename("ID_dyad" = dyad) %>%
+                           left_join(info_part))
+
+mattr_ts_30 <- rbind.data.frame(mattr_ts_30, word_df %>%
+  inner_join(data.frame(result@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1])%>%
+  left_join(info_part))
+###
+result <- MATTR(tokenized.text, window = 100, char=TRUE)
+
+mattr_100<- rbind.data.frame(mattr_100, data.frame("value" = result@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+                           rename("ID_dyad" = dyad) %>%
+                           left_join(info_part))
+
+mattr_ts_100 <- rbind.data.frame(mattr_ts_100, word_df %>%
+  inner_join(data.frame(result@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1])%>%
+  left_join(info_part))
+
+}
+
+rm(t)
+rm(tokenized.text)
+rm(word_df)
+```
+
+###individual: plots
+```{r comparison of windows}
+
+ggplot(mattr_ts_30, aes(x=token, y=value, color = condition)) +
+  geom_line(aes(group = paste(ID_participant, ID_partner)), alpha = 0.7, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  geom_smooth(method = "lm", size = 2) +
+  ylim(0.50,1) +
+  theme_bw() +
+  ylab("MATTR") +
+  xlab("Accumulated number of tokens")
+  #gtitle("Window size = 30 tokens")
+
+ggsave("fig_1_mattr.png", height = 3, width = 5)
+
+
+m10 = lmer(MATTR ~ condition + (1|ID_dyad), data = mattr_10)
+summary(m10)
+plot(allEffects(m10))
+
+m30 = lmer(MATTR ~ condition + (1|ID_dyad), data = mattr_30)
+summary(m30)
+plot(allEffects(m30))
+
+m100 = lmer(MATTR ~ condition + (1|ID_dyad), data = mattr_100)
+summary(m100)
+plot(allEffects(m100))
+
+```
+##convergence plots mattr
+```{r}
+FC_speech <- read_tsv("FC_content_MATTR.tsv")
+mattr_conv <- data.frame()
+for (i in unique(FC_speech$ID_dyad)) {
+  print(i)
+t <- subset(FC_speech, ID_dyad == i)
+p1 <- unique(t$ID_participant)[1]
+p2 <- unique(t$ID_participant)[2]
+
+# Apply the function to the original data frame
+word_df_dyad <- split_utterances(t) %>%
+  filter(!grepl("^$", word)) %>%
+  filter(!is.na(word)) %>%
+  mutate(token_real = seq_along(word))
+
+write_tsv(t[,c(4,3)], "manual_check.tsv")
+
+word_df_p1 <- word_df_dyad %>%
+  filter(ID_participant == p1) %>%
+  mutate(token = seq_along(word))
+word_df_p2 <- word_df_dyad %>%
+  filter(ID_participant == p2) %>%
+  mutate(token = seq_along(word))
+
+cat(word_df_dyad$word,file="outfile.txt",sep="\n")
+cat(word_df_p1$word,file="outfile_p1.txt",sep="\n")
+cat(word_df_p2$word,file="outfile_p2.txt",sep="\n")
+tokenized.text <- koRpus::tokenize("outfile.txt", lang="nl")
+tokenized.text_p1 <- koRpus::tokenize("outfile_p1.txt", lang="nl")
+tokenized.text_p2 <- koRpus::tokenize("outfile_p2.txt", lang="nl")
+
+ttr.res <- MATTR(tokenized.text, window = 30, char=TRUE)
+mattr_df <- data.frame(ttr.res@MATTR.char)
+
+ttr.res_p1 <- MATTR(tokenized.text_p1, window = 30, char=TRUE)
+mattr_df_p1 <- data.frame(ttr.res_p1@MATTR.char)
+
+ttr.res_p2 <- MATTR(tokenized.text_p2, window = 30, char=TRUE)
+mattr_df_p2 <- data.frame(ttr.res_p2@MATTR.char)
+
+ts_d <- word_df_dyad %>%
+  left_join(mattr_df %>% rename("token_real" = token))
+
+ts_p1 <- word_df_p1 %>%
+  left_join(mattr_df_p1) %>%
+  mutate(ID_participant = p1)
+
+ts_p2 <- word_df_p2 %>%
+  left_join(mattr_df_p2) %>%
+  mutate(ID_participant = p2)
+
+ts <- ts_p1 %>%
+  bind_rows(ts_p2) %>%
+  arrange(token_real) %>%
+  mutate(constant = 1,
+         ID_dyad = i)
+
+mattr_conv <- rbind.data.frame(mattr_conv, ts)
+
+ts <- ts %>%
+  right_join(info_part)
+
+size_speech = 5
+ggplot(ts[!is.na(ts$value),], aes(x=token_real, y=value, color = condition)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = ID_participant), size = 1) +
+  geom_smooth(aes(group = ID_participant),se = FALSE, color="grey", size = 1) +
+  #geom_point(data = ts_d, aes(x=token_real, y=value), color = "black") +
+  #geom_point(data = ts, aes(x=token_real, y=constant), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.001), alpha = 0.01, size = 0.0001, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.002), size = size_speech, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.003), size = size_speech, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.004), size = size_speech, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.005), size = size_speech, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.006), size = size_speech, shape = 15) +
+  #geom_point(data = ts, aes(x=token_real, y=constant-0.007), size = size_speech, shape = 15) +
+  #annotate("text", x = 100, y = 0.95, label = i) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  ggtitle(i) +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(x = NULL, y = NULL) +
+  ylim(0.5, 1)
+ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/mattr_individ_win30/", i, ".png"), height = 2, width = 4)
+
+}
+```
+
+##combine
+```{r}
+corr_dyad <- verbalign %>%
+  left_join(read_tsv("FC_multimod_summary.tsv") %>%
+              select(ID_dyad, ID_participant, ID_partner, g_prop_time)) %>%
+  left_join(liking) %>%
+  left_join(mattr_100) %>%
+  group_by(ID_dyad) %>%
+  reframe(content_x = content_word[1],
+          content_y = content_word[2],
+          gest_x = g_prop_time[1],
+          gest_y = g_prop_time[2],
+          mattr_x = MATTR[1],
+          mattr_y = MATTR[2],
+          rapport = rapport_cat[1],
+          condition = condition[1],
+          ID_participant = ID_participant[1],
+          ID_partner = ID_partner[1],) %>%
+  mutate(condition = if_else(grepl("L2-L1", condition), "L1-L2", condition))
+
+ggplot(corr_dyad, aes(gest_x, gest_y, color = rapport)) +
+  geom_point() +
+  scale_color_manual(values = c("#5BBCD6", "#ff8787", "#FFD800")) +
+  geom_smooth(method="lm") +
+  ylab("Gesture use (subject)") +
+  xlab("Gesture use (partner)") +
+  labs(color = "Social Rapport") +
+  facet_wrap(~condition) +
+  theme_classic() +
+  theme(aspect.ratio=1)
+
+ggsave("fig_3_convergence.png", height = 3, width = 5)
+
+m = lmer(gest_x ~ gest_y*rapport+ (1|ID_participant) + (1|ID_partner), data = corr_dyad)
+summary(m)
+plot(allEffects(m))
+
+m = lmer(content_x ~content_y*condition + (1|ID_participant) + (1|ID_partner), data = corr_dyad)
+summary(m)
+plot(allEffects(m))
+
+m = lmer(mattr_x ~ mattr_y + (1|ID_participant) + (1|ID_partner), data = corr_dyad)
+summary(m)
+plot(allEffects(m))
+```
+
+
+#ANALYSIS
+##lexical entrainment
+```{r}
+m0 = lmer(content_word ~ (1|ID_dyad), data = verbalign_random)
+m1 = update(m0,.~. + condition)
+anova(m0, m1)
+summary(m1)
+plot(allEffects(m1))
+
+m0 = lmer(content_word ~ (1|ID_dyad), data = verbalign)
+m1 = update(m0,.~. + condition)
+anova(m0, m1)
+summary(m1)
+plot(allEffects(m1))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m1))) #get fixed effects
+
+pd <- position_dodge(0.7)
+ggplot() +
+  geom_point(data = verbalign, aes(condition, content_word, fill = ID_participant), position = pd, size = 1) +
+  geom_point(data = fixed, aes(x = condition, y = fit), size = 3) +
+  geom_line(data = verbalign, aes(condition, content_word, group = ID_participant, color=direction), position = pd) +
+  scale_color_manual(values = c("#F98400", "grey")) +
+  geom_errorbar(data = fixed, aes(x = condition, ymin = lower, ymax = upper),
+                color="red",width=0.1,size=1) +
+  #scale_color_manual(values = sample(colors(138)))+
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size=20),
+        axis.text = element_text(size=16)) +
+  ylab("Copied content words") +
+  xlab("Condition")
+ggsave("chapter_4_lexalign_plot.png", height = 5, width = 5)
+```
+
+
+
+
+#OLD STUFF
+#Study 1
+###data
+####content words
+```{r}
+verbalign<- read.delim("data/result_lexical_alignment.txt") %>%
+  mutate(ID_participant = gsub(" imitates.*.txt", "\\1", X),
+         ID_participant = gsub("out_", "\\1", ID_participant),
+         ID_participant = toupper(gsub("[a-c][a-c]_[1-2]", "\\1", ID_participant)),
+         ID_partner = gsub(".*imitates ", "\\1", X),
+         ID_partner = gsub(".txt", "\\1", ID_partner),
+         ID_partner= toupper(gsub("[a-c][a-c]_[1-2]", "\\1", ID_partner))) %>%
+  select(-X) %>%
+  rename("function_word" = functie,
+         "content_word" = inhoud) %>%
+  left_join(info_part) %>%
+  group_by(ID_participant) %>%
+  mutate(direction = if_else(condition[1] != condition[2] && content_word[grepl("L1-L1", condition)] < content_word[grepl("L1-L2", condition)], "marked", "unmarked",))
+
+verbalign_random <- verbalign %>%
+  bind_rows(read.csv("data/vergelijk_real_random.csv", sep = ";") %>%
+                       filter(grepl("random", type)) %>%
+                       rename("function_word" = functie, "content_word" = inhoud, "condition" = type) %>%
+                       mutate(ID_participant = info_part$ID_participant,
+                              ID_partner = info_part$ID_partner,
+                              ID_dyad = info_part$ID_dyad)) %>%
+  mutate(condition = as.factor(condition),
+         condition = fct_relevel(condition, "random"))
+
+verbalign_relative <- read_tsv("FC_speech.tsv") %>%
+  group_by(ID_participant, ID_partner, ID_dyad) %>%
+  reframe(n_word = sum(word_count, na.rm = T)) %>%
+  inner_join(verbalign) %>%
+  mutate(copying_relative = content_word/n_word) %>%
+  left_join(info_part)
+
+m = lmer(copying_relative ~ condition + (1|ID_group) + (1|ID_dyad), data = verbalign_relative)
+summary(m)
+plot(allEffects(m))
+```
+####gestural alignment
+```{r}
+FC_gestures <- read_tsv(paste0(data_ch3, "FC_gestures_final.tsv")) %>%
+  arrange(ID_dyad, t0) %>%
+  mutate(ID_prime = paste(ID_participant, ID_partner, ID_gesture, sep = "_"),
+         nonref = ifelse(grepl("yes", nonref), "nonref", nonref),
+         icon = ifelse(grepl("yes", icon), "icon", icon),
+         metaph = ifelse(grepl("yes", metaph), "metaph", metaph),
+         conv = ifelse(grepl("yes", conv), "conv", conv),
+         semantics = as.factor(paste(nonref, icon, metaph, deixis, conv, sep = "-")))
+levels(FC_gestures$semantics) <- c("icon", "icon", "icon", "metaph-abstr",
+                              "metaph", "metaph", "metaph", "abstract",
+                              "concrete", "emblem", "nonref", "nonref")
+
+prime_target <- data.frame()
+for (i in unique(FC_gestures$ID_prime)) {
+  p <- subset(FC_gestures, ID_prime == i)
+  t <- subset(FC_gestures, ID_participant == p$ID_partner & ID_partner == p$ID_participant)
+  
+  random_participant <- sample(unique(FC_gestures$ID_participant[FC_gestures$condition == p$condition & FC_gestures$ID_participant != p$ID_participant]), 1)
+  r <- subset(FC_gestures, ID_participant == random_participant)
+  random_partner <- sample(unique(r$ID_partner), 1)
+  r <- subset(r, ID_partner == random_partner)
+
+  t0_prime = p$t0
+  t1_prime = p$t1
+  sem_prime = p$semantics
+  
+  vct_sim <- t$ID_prime[which(t$semantics == sem_prime & t$t0 > t0_prime & t$t0 < t1_prime)]
+  p$real_prime_sim <- ifelse(length(vct_sim) >= 1, 1, 0)
+  p$real_target_sim <- ifelse(length(vct_sim) >= 1, vct_sim[1], "")
+  
+  vct_10 <- t$ID_prime[which(t$semantics == sem_prime & t$t0 > t0_prime & t$t0 <= t0_prime+10000)]
+  p$real_prime_10 <- ifelse(length(vct_10) >= 1, 1, 0)
+  p$real_target_10 <- ifelse(length(vct_10) >= 1, vct_10[1], "")
+  
+  vct_30 <- t$ID_prime[which(t$semantics == sem_prime & t$t0 > t0_prime & t$t0 <= t0_prime+30000)]
+  p$real_prime_30 <- ifelse(length(vct_30) >= 1, 1, 0)
+  p$real_target_30 <- ifelse(length(vct_30), vct_30[1], "")
+  
+  vct_60 <- t$ID_prime[which(t$semantics == sem_prime & t$t0 > t0_prime & t$t0 <= t0_prime+60000)]
+  p$real_prime_60 <- ifelse(length(vct_60) >= 1, 1, 0)
+  p$real_target_60 <- ifelse(length(vct_60), vct_60[1], "")
+  
+  vct_random_sim <- r$ID_prime[which(r$semantics == sem_prime & r$t0 > t0_prime & r$t0 < t1_prime)]
+  p$random_prime_sim <- ifelse(length(vct_random_sim) >= 1, 1, 0)
+  p$random_target_sim <- ifelse(length(vct_random_sim) >= 1, vct_random_sim[1], "")
+  
+  vct_random_10 <- r$ID_prime[which(r$semantics == sem_prime & r$t0 > t0_prime & r$t0 <= t0_prime+10000)]
+  p$random_prime_10 <- ifelse(length(vct_random_10) >= 1, 1, 0)
+  p$random_target_10 <- ifelse(length(vct_random_10) >= 1, vct_random_10[1], "")
+  
+  vct_random_30 <- r$ID_prime[which(r$semantics == sem_prime & r$t0 > t0_prime & r$t0 <= t0_prime+30000)]
+  p$random_prime_30 <- ifelse(length(vct_random_30) >= 1, 1, 0)
+  p$random_target_30 <- ifelse(length(vct_random_30), vct_random_30[1], "")
+  
+  vct_random_60 <- r$ID_prime[which(r$semantics == sem_prime & r$t0 > t0_prime & r$t0 <= t0_prime+60000)]
+  p$random_prime_60 <- ifelse(length(vct_random_60) >= 1, 1, 0)
+  p$random_target_60 <- ifelse(length(vct_random_60), vct_random_60[1], "")
+  
+  prime_target <- rbind.data.frame(prime_target, p)
+}
+
+gestalign_shuffle <- prime_target %>%
+  select(-starts_with("real")) %>%
+  rename_with(~ gsub("random_", "", .x, fixed = TRUE)) %>%
+  group_by(ID_dyad, ID_participant, ID_partner, condition, semantics) %>%
+  summarize(win_sim = sum(prime_sim),
+            win_10 = sum(prime_10),
+            win_30 = sum(prime_30),
+            win_60 = sum(prime_60))
+
+
+gestalign_real <- prime_target %>%
+  select(-starts_with("random")) %>%
+  rename_with(~ gsub("real_", "", .x, fixed = TRUE)) %>%
+  group_by(ID_dyad, ID_participant, ID_partner, condition, semantics) %>%
+  summarize(win_sim = sum(prime_sim),
+            win_10 = sum(prime_10),
+            win_30 = sum(prime_30),
+            win_60 = sum(prime_60))
+
+```
+
+```{r}
+FC_elan_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/elan/"
+#list all the files in the elan directory
+FC_elan_files <- list.files(FC_elan_dir, pattern = ".eaf$")
+#read into table where every row corresponds to an annotation
+FC_all_ann <- efileAnnotations(paste0(FC_elan_dir, FC_elan_files))
+FC_all_ann_ANN <- subset(FC_all_ann, atype == "ANN")
+```
+####mattr speech data
+```{r}
+# Regular expression pattern to match all function words (lowercase)
+pattern_function <- "\\b(ik|mij|me|mijn|jij|jou|je|ge|jouw|uw|hij|hem|hem|zijn|zij|haar|haar|haar|het|er|zijn|wij|ons|we|onze|ons|ons|jullie|jullie|jullie|jullie|uw|zij|hen|ze|hun|de|het|een|dit|deze|dat|die|mijn|jouw|u|zijn|haar|ons|onze|jullie|uw|hun|die|dat|wie|wat|wie|wat|waar|wanneer|waarom|hoe|en|of|maar|want|als|dan|hoewel|omdat|aan|bij|in|op|met|van|naar|door|voor|ben|bent|is|zijn|word|wordt|wordt|worden|worden|worden|heb|hebt|heeft|hebben|hebben|hebben|kan|kunt|kan|kunnen|kunnen|kunnen|moet|moet|moet|moeten|moeten|moeten|zal|zult|zal|zullen|zullen|zullen|mag|mag|mag|mogen|mogen|mogen|wil|wilt|wil|willen|willen|willen)\\b"
+```
+
+```{r}
+pattern_nonlex <- "\\b(ja|nee|amai|wow|wauw|yeah|ai|oh|ah|eh|ehm|mh|hm*|allez|he|oei|ok|oke|okee)\\b"
+FC_speech <- FC_all_ann_ANN %>%
+  filter(grepl("(A|B|C)$", TIER_ID)) %>%
+  mutate(ID_group = as.character(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = paste0(ID_group, "_", substring(TIER_ID, 0, 1)),
+         ID_partner = paste0(ID_group, "_",
+                             if_else(grepl("ab.eaf", filename) & grepl("A", ID_participant), "B", ""), 
+                             if_else(grepl("ab.eaf", filename) & grepl("B", ID_participant), "A", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("B", ID_participant), "C", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("C", ID_participant), "B", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("A", ID_participant), "C", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("C", ID_participant), "A", "")),
+         ID_dyad = as.character(toupper(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]_[a-c][a-c]")))) %>%
+  select(t0, t1, VALUE, ID_participant, ID_partner, ID_dyad) %>%
+  mutate(IP_ID = paste(ID_participant, ID_partner, t0, t1, sep = ("_")),
+         clarity = if_else(grepl("(\\@|\\(.*\\))", VALUE, perl=T), "unclear", "ok"), #unclear if laughter or not transcribed
+         speech_clean = gsub("(\\@|\\(.*\\))", "\\1", VALUE, perl=T),
+         speech_clean = gsub("\\(([^\\)]*?)\\)", "\\1", speech_clean, perl=T),
+         speech_clean = gsub(pattern_nonlex, "", speech_clean),
+         #speech_clean = gsub(pattern_function, "", speech_clean),
+         #speech_clean = gsub("(da's|'t|'k)", "", speech_clean),
+         speech_clean = gsub("@", "\\1", speech_clean, perl=T),#delete laughter/meta-descriptions/unclear words) 
+         speech_clean = gsub("euhm *", "\\1", speech_clean, perl = T), #replace euhm for syllable count as 1
+         word_count = lengths(strsplit(speech_clean, "\\W+"))) %>%
+  arrange(ID_dyad, t0)
+
+write_tsv(FC_speech, "FC_speech_MATTR.tsv")
+```
+###custom functions
+```{r custom functions}
+split_utterances <- function(utterances_df) {
+  words <- unlist(strsplit(utterances_df$speech_clean, "\\s+"))
+  speakers <- rep(utterances_df$ID_participant, sapply(strsplit(utterances_df$speech_clean, "\\s+"), length))
+  data.frame(word = words, ID_participant = speakers)
+}
+```
+###dyad: calculation
+```{r}
+FC_speech <- read_tsv("FC_speech_MATTR.tsv")
+
+mattr_win10 <- data.frame()
+mattr_win20 <- data.frame()
+mattr_win50 <- data.frame()
+mattr_win200 <- data.frame()
+mattr_ts_win10 <- data.frame()
+mattr_ts_win20 <- data.frame()
+mattr_ts_win50 <- data.frame()
+mattr_ts_win200 <- data.frame()
+for (i in unique(FC_speech$ID_dyad)) {
+print(i)
+t <- subset(FC_speech, ID_dyad == i)
+
+# Apply the function to the original data frame
+word_df <- split_utterances(t) %>%
+  filter(!grepl("^$", word)) %>%
+  filter(!is.na(word)) %>%
+  mutate(token = seq_along(word))
+cat(word_df$word,file="mattr_dyad.txt",sep="\n")
+
+(tokenized.text <- koRpus::tokenize(
+    "mattr_dyad.txt",
+    lang="nl",
+    doc_id="sample"
+))
+
+result_10 <- MATTR(tokenized.text, window = 10, char=TRUE)
+mattr_win10 <- rbind.data.frame(mattr_win10, data.frame("value" = result_10@MATTR[1], "dyad" = i) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+mattr_ts_win10 <- rbind.data.frame(mattr_ts_win10, word_df %>%
+  inner_join(data.frame(result_10@MATTR.char), by = "token") %>%
+  mutate(ID_dyad = i) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+
+result_20 <- MATTR(tokenized.text, window = 20, char=TRUE)
+mattr_win20 <- rbind.data.frame(mattr_win20, data.frame("value" = result_20@MATTR[1], "dyad" = i)%>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_dyad) %>%
+  left_join(liking)) 
+mattr_ts_win20 <- rbind.data.frame(mattr_ts_win20, word_df %>%
+  inner_join(data.frame(result_20@MATTR.char), by = "token") %>%
+  mutate(ID_dyad = i) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+
+result_50 <- MATTR(tokenized.text, window = 50, char=TRUE)
+mattr_win50 <- rbind.data.frame(mattr_win50, data.frame("value" = result_50@MATTR[1], "dyad" = i) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+mattr_ts_win50 <- rbind.data.frame(mattr_ts_win50, word_df %>%
+  inner_join(data.frame(result_50@MATTR.char), by = "token") %>%
+  mutate(ID_dyad = i) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+
+result_200 <- MATTR(tokenized.text, window = 200, char=TRUE)
+mattr_win200 <- rbind.data.frame(mattr_win200, data.frame("value" = result_200@MATTR[1], "dyad" = i) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+mattr_ts_win200 <- rbind.data.frame(mattr_ts_win200, word_df %>%
+  inner_join(data.frame(result_200@MATTR.char), by = "token") %>%
+  mutate(ID_dyad = i) %>%
+  left_join(info_dyad) %>%
+  left_join(liking))
+}
+
+rm(t)
+rm(tokenized.text)
+rm(word_df)
+```
+###dyad: models
+```{r}
+m10 = lm(MATTR ~ condition, data = mattr_win10)
+summary(m10)
+plot(allEffects(m10))
+
+m20 = lm(MATTR ~ condition, data = mattr_win20)
+summary(m20)
+plot(allEffects(m20))
+
+m50 = lm(MATTR ~ condition, data = mattr_win50)
+summary(m50)
+plot(allEffects(m50))
+
+m200 = lm(MATTR ~ condition, data = mattr_win200)
+summary(m200)
+plot(allEffects(m200))
+```
+###dyad:plots
+```{r}
+w10 <- ggplot(mattr_ts_win10, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  theme_bw() +
+  ylim(0.25,1) +
+  guides(colour = guide_legend(override.aes = list(size=5, alpha = 1))) +
+  theme(legend.position = "top") +
+  ggtitle("Window = 10 tokens")
+
+w20 <- ggplot(mattr_ts_win20, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Window = 20 tokens")
+
+w50 <- ggplot(mattr_ts_win50, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Window = 50 tokens")
+
+w200 <- ggplot(mattr_ts_win200, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ggtitle("Window = 200 tokens")
+
+ggarrange(w10, w20, w50, w200,
+          align = "v",
+          ncol = 2, nrow = 2,
+          common.legend = TRUE, legend="top")
+ggsave("mattr_dyad_4win.png", height = 8, width = 6)
+```
+###individual: calculations
+```{r}
+FC_speech <- read_tsv("FC_speech_MATTR.tsv") %>%
+  mutate(ID_loop = paste0(ID_participant, ID_dyad))
+
+mattr_inidiv_win10 <- data.frame()
+mattr_inidiv_win30 <- data.frame()
+mattr_inidiv_win50 <- data.frame()
+mattr_inidiv_win200 <- data.frame()
+mattr_inidiv_ts_win10 <- data.frame()
+mattr_inidiv_ts_win30 <- data.frame()
+mattr_inidiv_ts_win50 <- data.frame()
+mattr_inidiv_ts_win200 <- data.frame()
+for (i in unique(FC_speech$ID_loop)) {
+print(i)
+t <- subset(FC_speech, ID_loop == i)
+
+# Apply the function to the original data frame
+word_df <- split_utterances(t) %>%
+  filter(!grepl("^$", word)) %>%
+  filter(!is.na(word)) %>%
+  mutate(token = seq_along(word))
+cat(word_df$word,file="mattr_dyad.txt",sep="\n")
+
+(tokenized.text <- koRpus::tokenize(
+    "mattr_dyad.txt",
+    lang="nl",
+    doc_id="sample"
+))
+
+result_10 <- MATTR(tokenized.text, window = 10, char=TRUE)
+mattr_inidiv_win10 <- rbind.data.frame(mattr_inidiv_win10, data.frame("value" = result_10@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+mattr_inidiv_ts_win10 <- rbind.data.frame(mattr_inidiv_ts_win10, word_df %>%
+  inner_join(data.frame(result_10@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1]) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+
+result_30 <- MATTR(tokenized.text, window = 30, char=TRUE)
+mattr_inidiv_win30 <- rbind.data.frame(mattr_inidiv_win30, data.frame("value" = result_30@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1])%>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_part) %>%
+  left_join(liking)) 
+mattr_inidiv_ts_win30 <- rbind.data.frame(mattr_inidiv_ts_win30, word_df %>%
+  inner_join(data.frame(result_30@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1]) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+
+result_50 <- MATTR(tokenized.text, window = 50, char=TRUE)
+mattr_inidiv_win50 <- rbind.data.frame(mattr_inidiv_win50, data.frame("value" = result_50@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+mattr_inidiv_ts_win50 <- rbind.data.frame(mattr_inidiv_ts_win50, word_df %>%
+  inner_join(data.frame(result_50@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1]) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+
+result_200 <- MATTR(tokenized.text, window = 200, char=TRUE)
+mattr_inidiv_win200 <- rbind.data.frame(mattr_inidiv_win200, data.frame("value" = result_200@MATTR[1],
+                                                        "dyad" = t$ID_dyad[1],
+                                                        "ID_participant" = t$ID_participant[1]) %>%
+  rename("ID_dyad" = dyad) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+mattr_inidiv_ts_win200 <- rbind.data.frame(mattr_inidiv_ts_win200, word_df %>%
+  inner_join(data.frame(result_200@MATTR.char), by = "token") %>%
+  mutate(ID_participant = t$ID_participant[1],
+         ID_dyad = t$ID_dyad[1]) %>%
+  left_join(info_part) %>%
+  left_join(liking))
+}
+
+rm(t)
+rm(tokenized.text)
+rm(word_df)
+```
+###individual: models
+```{r}
+m10 = lm(MATTR ~ condition, data = mattr_inidiv_win10)
+summary(m10)
+plot(allEffects(m10))
+
+m20 = lm(MATTR ~ condition, data = mattr_inidiv_win20)
+summary(m20)
+plot(allEffects(m20))
+
+m50 = lmer(MATTR ~ condition + (1|ID_dyad), data = mattr_inidiv_win50)
+summary(m50)
+plot(allEffects(m50))
+
+m200 = lm(MATTR ~ condition, data = mattr_inidiv_win200)
+summary(m200)
+plot(allEffects(m200))
+```
+
+```{r}
+mattr_plot <- mattr_inidiv_win30 %>%
+  group_by(ID_participant) %>%
+  mutate(direction = if_else(condition[1] != condition[2] && MATTR[grepl("L1-L1", condition)] < MATTR[grepl("L1-L2", condition)], "marked", "unmarked",))
+
+mattr_dyad <- mattr_plot %>%
+  group_by(ID_dyad) %>%
+  reframe(x = MATTR[1],
+          y = MATTR[2]) %>%
+  left_join(info_dyad)
+
+cor.test(mattr_dyad$x, mattr_dyad$y, method = "pearson")
+m = lmer(y ~ x*condition + (1|ID_group), data = mattr_dyad)
+summary(m)
+
+m30 = lm(MATTR ~ condition, data = mattr_plot)
+summary(m30)
+plot(allEffects(m30))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m30))) #get fixed effects
+
+pd <- position_dodge(0.7)
+ggplot() +
+  geom_point(data = mattr_plot, aes(condition, MATTR, fill = ID_participant), position = pd, size = 1) +
+  geom_point(data = fixed, aes(x = condition, y = fit), size = 3) +
+  geom_line(data = mattr_plot, aes(condition, MATTR, group = ID_participant, color = direction), position = pd) +
+  scale_color_manual(values = c("#F98400", "grey")) +
+  geom_errorbar(data = fixed, aes(x = condition, ymin = lower, ymax = upper),
+                color="red",width=0.1,size=1) +
+  #scale_color_manual(values = sample(colors(138)))+
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size=20),
+        axis.text = element_text(size=16)) +
+  ylab("MATTR") +
+  xlab("Condition")
+ggsave("chapter_4_mmattr_corr_plot.png", height = 5, width = 5)
+```
+
+###individual: plots
+```{r comparison of windows}
+w10 <- ggplot(mattr_inidiv_ts_win10, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  theme_bw() +
+  ylim(0.25,1) +
+  guides(colour = guide_legend(override.aes = list(size=5, alpha = 1))) +
+  theme(legend.position = "top") +
+  ylab("MATTR") +
+  xlab("Accumulated number of tokens") +
+  ggtitle("Window = 10 tokens")
+
+w20 <- ggplot(mattr_inidiv_ts_win20, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ylab("MATTR") +
+  xlab("Accumulated number of tokens") +
+  ggtitle("Window = 20 tokens")
+
+w50 <- ggplot(mattr_inidiv_ts_win50, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ylab("MATTR") +
+  xlab("Accumulated number of tokens") +
+  ggtitle("Window = 50 tokens")
+
+w200 <- ggplot(mattr_inidiv_ts_win200, aes(x=token, y=value, color = condition)) +
+  geom_point(aes(group = ID_dyad), alpha = 0.2, size = 0.3) +
+  scale_color_manual(values = c("#F98400", "#00A08A", "#FFD800")) +
+  ylim(0.25,1) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ylab("MATTR") +
+  xlab("Accumulated number of tokens") +
+  ggtitle("Window = 200 tokens")
+
+ggarrange(w10, w20, w50, w200,
+          align = "v",
+          ncol = 2, nrow = 2,
+          common.legend = TRUE, legend="top")
+ggsave("chapter4_mattr_indiv_4win.png", height = 8, width = 6)
+```
+
+###alignment: content words
+```{r}
+m0 = lmer(content_word ~ (1|ID_dyad), data = verbalign_random)
+m1 = update(m0,.~. + condition)
+anova(m0, m1)
+summary(m1)
+plot(allEffects(m1))
+
+m0 = lmer(content_word ~ (1|ID_dyad), data = verbalign)
+m1 = update(m0,.~. + condition)
+anova(m0, m1)
+summary(m1)
+plot(allEffects(m1))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m1))) #get fixed effects
+
+pd <- position_dodge(0.7)
+ggplot() +
+  geom_point(data = verbalign, aes(condition, content_word, fill = ID_participant), position = pd, size = 1) +
+  geom_point(data = fixed, aes(x = condition, y = fit), size = 3) +
+  geom_line(data = verbalign, aes(condition, content_word, group = ID_participant, color=direction), position = pd) +
+  scale_color_manual(values = c("#F98400", "grey")) +
+  geom_errorbar(data = fixed, aes(x = condition, ymin = lower, ymax = upper),
+                color="red",width=0.1,size=1) +
+  #scale_color_manual(values = sample(colors(138)))+
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size=20),
+        axis.text = element_text(size=16)) +
+  ylab("Copied content words") +
+  xlab("Condition")
+ggsave("chapter_4_lexalign_plot.png", height = 5, width = 5)
+```
+
+```{r}
+verbalign_corr <- verbalign %>%
+  group_by(ID_dyad) %>%
+  reframe(content_x = content_word[1],
+          content_y = content_word[2]) %>%
+  left_join(info_dyad)
+
+m = lmer(content_x ~ content_y*condition + (1|ID_group), data = verbalign_corr)
+summary(m)
+plot(allEffects(m))
+
+cor.test(verbalign_corr$content_x, verbalign_corr$content_y, method = "pearson")
+```
+
+```{r}
+verbalign_diff <- verbalign %>%
+  group_by(ID_dyad) %>%
+  reframe(diff = max(content_word)-min(content_word)) %>%
+  left_join(liking) %>%
+  left_join(info_dyad)
+  
+m = lm(diff ~ condition*liking_prod, data = verbalign_diff)
+summary(m)
+plot(allEffects(m))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m))) #get fixed effects
+
+ggplot() +
+  geom_point(data = verbalign_diff , aes(liking_prod, diff, color = condition), size = 3) +
+  geom_smooth(data = verbalign_diff , aes(liking_prod, diff, color = condition), method = lm) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  theme_bw() +
+  theme(text = element_text(size=18),
+        axis.text = element_text(size=14)) +
+  ylab("Difference in copying") +
+  xlab("Rapport (z-scaled)")
+ggsave("chapter_4_align_rapport_plot.png", height = 5, width = 7)
+```
+
+###alignment: gesture functions
+```{r}
+sh = lmer(win_10 ~ semantics*condition + (1|ID_dyad), data = gestalign_shuffle)
+re = lmer(win_10 ~ semantics*condition + (1|ID_dyad), data = gestalign_real)
+
+f1 <- do.call(rbind.data.frame, as.data.frame(allEffects(sh))) %>% mutate(model = "shuffle")
+f2 <- do.call(rbind.data.frame, as.data.frame(allEffects(re))) %>% mutate(model = "real")
+
+
+do.call("rbind", list(f1, f2)) %>%
+  #mutate(Dimension = factor(variable, levels = c("Horizontal", "Vertical"))) %>%
+  ggplot(aes(x = condition, y = fit, color = semantics, group = semantics)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  #scale_color_manual(values = c("#00A08A", "#F98400"), name = "Dimension") +
+  facet_wrap(~model) +
+  #ggtitle("Linear regression for Amplitude") +
+  #xlab("Condition") +
+  #ylab("Position (scaled)") +
+  theme_bw(
+    #base_size = 18
+    )+
+  theme(legend.position = "top",
+        strip.background = element_rect(colour="black", fill="white"))
+#ggsave("03_amplitudes.png", width =6, height = 3.7, dpi = 300)
+
+```
+###distance (interpersonal)
+```{r}
+FC_speech <- read_tsv("FC_speech_MATTR.tsv")
+mattr_conv <- data.frame()
+for (i in unique(FC_speech$ID_dyad)) {
+  print(i)
+t <- subset(FC_speech, ID_dyad == i)
+p1 <- unique(t$ID_participant)[1]
+p2 <- unique(t$ID_participant)[2]
+
+# Apply the function to the original data frame
+word_df_dyad <- split_utterances(t) %>%
+  filter(!grepl("^$", word)) %>%
+  filter(!is.na(word)) %>%
+  mutate(token_real = seq_along(word))
+
+write_tsv(t[,c(4,3)], "manual_check.tsv")
+
+word_df_p1 <- word_df_dyad %>%
+  filter(ID_participant == p1) %>%
+  mutate(token = seq_along(word))
+word_df_p2 <- word_df_dyad %>%
+  filter(ID_participant == p2) %>%
+  mutate(token = seq_along(word))
+
+cat(word_df_dyad$word,file="outfile.txt",sep="\n")
+cat(word_df_p1$word,file="outfile_p1.txt",sep="\n")
+cat(word_df_p2$word,file="outfile_p2.txt",sep="\n")
+tokenized.text <- koRpus::tokenize("outfile.txt", lang="nl")
+tokenized.text_p1 <- koRpus::tokenize("outfile_p1.txt", lang="nl")
+tokenized.text_p2 <- koRpus::tokenize("outfile_p2.txt", lang="nl")
+
+ttr.res <- MATTR(tokenized.text, window = 30, char=TRUE)
+mattr_df <- data.frame(ttr.res@MATTR.char)
+
+ttr.res_p1 <- MATTR(tokenized.text_p1, window = 30, char=TRUE)
+mattr_df_p1 <- data.frame(ttr.res_p1@MATTR.char)
+
+ttr.res_p2 <- MATTR(tokenized.text_p2, window = 30, char=TRUE)
+mattr_df_p2 <- data.frame(ttr.res_p2@MATTR.char)
+
+ts_d <- word_df_dyad %>%
+  left_join(mattr_df %>% rename("token_real" = token))
+
+ts_p1 <- word_df_p1 %>%
+  left_join(mattr_df_p1) %>%
+  mutate(ID_participant = p1)
+
+ts_p2 <- word_df_p2 %>%
+  left_join(mattr_df_p2) %>%
+  mutate(ID_participant = p2)
+
+ts <- ts_p1 %>%
+  bind_rows(ts_p2) %>%
+  arrange(token_real) %>%
+  mutate(constant = 1,
+         ID_dyad = i)
+
+mattr_conv <- rbind.data.frame(mattr_conv, ts)
+
+size_speech = 0.5
+ggplot(ts[!is.na(ts$value),], aes(x=token_real, y=value, color = ID_participant)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = ID_participant), size = 1) +
+  geom_smooth(aes(group = ID_participant),se = FALSE, color="grey", size = 1) +
+  geom_point(data = ts_d, aes(x=token_real, y=value), color = "black") +
+  geom_point(data = ts, aes(x=token_real, y=constant), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.001), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.002), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.003), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.004), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.005), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.006), size = size_speech, shape = 15) +
+  geom_point(data = ts, aes(x=token_real, y=constant-0.007), size = size_speech, shape = 15) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  theme_bw() +
+  scale_x_continuous(n.breaks = 20)
+ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/mattr_individ_win30/", i, ".png"), height = 4, width = 8)
+
+}
+```
+
+###distance: dataframe
+```{r}
+mattr_individ_stabil <- mattr_conv %>%
+  group_by(ID_participant, ID_dyad) %>%
+  mutate(value_orig = value,
+         value = as.vector(scale(value_orig)),
+         index = seq_along(word),
+         part = if_else(index >= 0, "1", ""),
+         part = if_else(index >= round(1*(n()/4), digits = 0), "2", part),
+         part = if_else(index >= round(2*(n()/4), digits = 0), "3", part),
+         part = if_else(index >= round(3*(n()/4), digits = 0), "4", part)) %>%
+  ungroup() %>%
+  group_by(ID_participant, ID_dyad, part) %>%
+  reframe(sd = sd(value, na.rm=T),
+          ID_plotlines = paste0(ID_participant[1], ID_dyad[1], collapse = " - ")) %>%
+  left_join(info_part) %>%
+  left_join(liking)
+```
+###stabilization: plot
+```{r}
+m = lmer(sd~ condition*part + (1|ID_participant) + (1|ID_dyad), data = mattr_individ_stabil )
+summary(m)
+plot(allEffects(m))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m))) #get fixed effects
+
+pd <- position_dodge(0.7)
+ggplot() +
+  geom_point(data = mattr_individ_stabil , aes(part, sd, fill = ID_plotlines), position = pd, size = 1) +
+  geom_line(data = mattr_individ_stabil , aes(part, sd, group = ID_plotlines), color = "grey", position = pd) +
+  geom_point(data = fixed, aes(x = part, y = fit), size = 3) +
+  geom_errorbar(data = fixed, aes(x = part, ymin = lower, ymax = upper),
+                color="red",width=0.1,size=1) +
+  facet_wrap(~condition) +
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size=18),
+        axis.text = element_text(size=14)) +
+  ylab("SD of MATTR (z-scaled)") +
+  xlab("Part of conversation")
+ggsave("chapter_4_stabilization_plot.png")
+```
+```{r}
+mattr_dyad_converg <- mattr_conv %>%
+  group_by(ID_participant, ID_dyad) %>%
+  mutate(#value_orig = value,
+         #value = as.vector(scale(value_orig)),
+         index = seq_along(word),
+         part = if_else(index >= 0, "1", ""),
+         part = if_else(index >= round(1*(n()/4), digits = 0), "2", part),
+         part = if_else(index >= round(2*(n()/4), digits = 0), "1", part),
+         part = if_else(index >= round(3*(n()/4), digits = 0), "1", part)) %>%
+  ungroup() %>%
+  group_by(ID_participant, ID_dyad, part) %>%
+  reframe(mean = mean(value, na.rm = T)) %>%
+  ungroup() %>%
+  group_by(ID_dyad, part) %>%
+  reframe(diff = max(mean) - min(mean),
+          sd = sd(mean, na.rm=T)) %>%
+  left_join(info_dyad) %>%
+  left_join(liking) %>%
+  filter(part !=1)
+
+mattr_dyad_corr <- mattr_conv %>%
+  group_by(ID_participant, ID_dyad) %>%
+  mutate(#value_orig = value,
+         #value = as.vector(scale(value_orig)),
+         index = seq_along(word),
+         part = if_else(index >= 0, "1", ""),
+         part = if_else(index >= round(1*(n()/4), digits = 0), "2", part),
+         part = if_else(index >= round(2*(n()/4), digits = 0), "3", part),
+         part = if_else(index >= round(3*(n()/4), digits = 0), "4", part)) %>%
+  ungroup() %>%
+  group_by(ID_participant, ID_dyad, part) %>%
+  reframe(mean = mean(value, na.rm = T)) %>%
+  ungroup() %>%
+  group_by(ID_dyad, part) %>%
+  reframe(x = mean[1],
+          y = mean[2]) %>%
+  left_join(info_dyad) %>%
+  left_join(liking) %>%
+  filter(part != 1)
+```
+
+```{r}
+cor.test(mattr_dyad_corr$x, mattr_dyad_corr$y, method = "pearson")
+m = lmer(y ~ x +(1|ID_group), data = mattr_dyad_corr)
+summary(m)
+plot(allEffects(m))
+```
+
+###distance:model
+```{r}
+m = lmer(value_x ~ value_y*part +(1|ID_dyad), data = test)
+summary(m)
+plot(allEffects(m))
+
+m = lm(diff ~ condition*part, data = mattr_dyad_converg)
+summary(m)
+plot(allEffects(m))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m))) #get fixed effects
+
+pd <- position_dodge(0.7)
+ggplot() +
+  geom_point(data = mattr_dyad_converg , aes(part, diff, fill = ID_dyad), position = pd, size = 1) +
+  geom_line(data = mattr_dyad_converg , aes(part, diff, group = ID_dyad), color = "grey", position = pd) +
+  geom_point(data = fixed, aes(x = part, y = fit), size = 3) +
+  geom_errorbar(data = fixed, aes(x = part, ymin = lower, ymax = upper),
+                color="red",width=0.1,size=1) +
+  facet_wrap(~condition) +
+  theme_bw() +
+  theme(legend.position = "none",
+        text = element_text(size=18),
+        axis.text = element_text(size=14)) +
+  ylab("Within dyad difference") +
+  xlab("Part of conversation")
+ggsave("chapter_4_lex_convergence_plot.png")
+
+mattr_dyad_converg_part34 <- mattr_dyad_converg %>%
+  #filter(!grepl("1", part)) %>%
+  group_by(ID_dyad, liking_prod, condition) %>%
+  reframe(mean_diff = mean(diff))
+
+m = lmer(diff ~ condition*liking_prod + (1|ID_group), data = mattr_dyad_converg)
+summary(m)
+plot(allEffects(m))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m))) #get fixed effects
+
+ggplot() +
+  geom_point(data = mattr_dyad_converg_part34 , aes(liking_prod, mean_diff, color = condition), size = 3) +
+  geom_smooth(data = mattr_dyad_converg_part34 , aes(liking_prod, mean_diff, color = condition), method = lm) +
+  scale_color_manual(values = c("#F98400", "#00A08A")) +
+  theme_bw() +
+  theme(text = element_text(size=18),
+        axis.text = element_text(size=14)) +
+  ylab("Difference in mean MATTR") +
+  xlab("Rapport (z-scaled)")
+ggsave("chapter_4_lex_rapport_plot.png", height= 5, width = 7)
+
+```
+
+##STUDY 2
+###data
+```{r}
+g_corr <- read_tsv(paste0(data_ch3, "FC_gestures_final.tsv")) %>%
+  filter(t0 <= 270000) %>%
+  group_by(ID_dyad, ID_participant) %>%
+  reframe(gesture_time = sum(t1-t0),
+          n = n(),
+          nonref = length(ID_gesture[grepl("yes", nonref)])/n,
+          abstr = length(ID_gesture[grepl("abstract", deixis)])/n,
+          concr = length(ID_gesture[grepl("concrete", deixis)])/n,
+          icon= length(ID_gesture[grepl("yes", icon)])/n,
+          metaph = length(ID_gesture[grepl("yes", metaph)])/n,
+          size = mean(size),
+          ampl_hori = mean(ampl_x),
+          ampl_vert = mean(ampl_y)) %>%
+  inner_join(read_tsv("FC_speech.tsv") %>%
+               filter(t0 <= 270000) %>%
+               group_by(ID_dyad, ID_participant) %>%
+               reframe(speech_time = sum(t1-t0))) %>%
+  mutate(pgt = gesture_time/speech_time) %>%
+  group_by(ID_dyad) %>%
+  reframe(pgt_x = pgt[1],
+          pgt_y = pgt[2],
+          nonref_x = nonref[1],
+          nonref_y = nonref[2],
+          abstr_x = abstr[1],
+          abstr_y = abstr[2],
+          concr_x = concr[1],
+          concr_y = concr[2],
+          icon_x = icon[1],
+          icon_y = icon[2],
+          metaph_x = metaph[1],
+          metaph_y = metaph[2],
+          size_x = size[1],
+          size_y = size[2],
+          ampl_hori_x = ampl_hori[1],
+          ampl_hori_y = ampl_hori[2],
+          ampl_vert_x = ampl_vert[1],
+          ampl_vert_y = ampl_vert[2]) %>%
+  left_join(info_dyad) %>%
+  left_join(liking)
+
+#part = if_else(t0 <= 135000, "1", "2")
+```
+
+
+
+###correlations
+```{r}
+
+m = lm(size_x ~ size_y*condition + size_y*liking_prod, data = g_corr)
+summary(m)
+plot(allEffects(m))
+
+m = lm(ampl_hori_x ~ ampl_hori_y*condition, data = g_corr)
+summary(m)
+plot(allEffects(m))
+
+m = lm(ampl_vert_x ~ ampl_vert_y*condition + ampl_vert_y*rapport_cat, data = g_corr)
+summary(m)
+plot(allEffects(m))
+```
+###plots
+```{r}
+m = lm(pgt_x ~ pgt_y*liking_prod, data = g_corr)
+summary(m)
+plot(allEffects(m))
+
+fixed <- as.data.frame(allEffects(m))$`pgt_y:liking_prod`
+
+ggplot() +
+  geom_smooth(data = fixed, aes(liking_prod, pgt_y), method = lm)
+geom_line
+```
+```{r}
+m = lm(nonref_x ~ nonref_y*condition, data = g_corr)
+summary(m)
+plot(allEffects(m))
+
+m = lm(abstr_x ~ abstr_y*condition, data = g_corr)
+summary(m)
+plot(allEffects(m))
+
+ggplot(g_corr, aes(nonref_x, nonref_y, color = condition)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+#outliers filteren!
+```
+
+
+```{r}
+g_diff <- read_tsv(paste0(data_ch3, "FC_gestures_final.tsv")) %>%
+  filter(t0 <= 270000) %>%
+  group_by(ID_dyad, ID_participant) %>%
+  mutate(part = if_else(t0 <= 135000, "1", "2")) %>%
+  ungroup %>%
+  group_by(ID_dyad, ID_participant, part) %>%
+  reframe(gesture_time = sum(t1-t0),
+          n = n(),
+          nonref = length(ID_gesture[grepl("yes", nonref)])/n,
+          abstr = length(ID_gesture[grepl("abstract", deixis)])/n,
+          concr = length(ID_gesture[grepl("concrete", deixis)])/n,
+          icon= length(ID_gesture[grepl("yes", icon)])/n,
+          metaph = length(ID_gesture[grepl("yes", metaph)])/n,
+          size = mean(size),
+          ampl_hori = mean(ampl_x),
+          ampl_vert = mean(ampl_y)) %>%
+  inner_join(read_tsv("FC_speech.tsv") %>%
+               filter(t0 <= 270000) %>%
+               group_by(ID_dyad, ID_participant) %>%
+               mutate(part = if_else(t0 <= 135000, "1", "2")) %>%
+               ungroup %>%
+               group_by(ID_dyad, ID_participant, part) %>%
+               reframe(speech_time = sum(t1-t0))) %>%
+  mutate(pgt = gesture_time/speech_time) %>%
+  group_by(ID_dyad, part) %>%
+  reframe(pgt = max(pgt)-min(pgt),
+          nonref = max(nonref)-min(nonref),
+          abstr = max(abstr)-min(abstr),
+          size = max(size)-min(size),
+          ampl_hori = max(ampl_hori)-min(ampl_hori),
+          ampl_vert = max(ampl_vert)-min(ampl_vert)) %>%
+  left_join(info_dyad) %>%
+  left_join(liking)
+```
+###distances
+```{r}
+m = lm(pgt ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+
+m = lm(nonref ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+
+m = lm(abstr ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+
+m = lm(size ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+
+m = lm(ampl_hori ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+
+m = lm(ampl_vert ~ condition*part, data = g_diff)
+summary(m)
+plot(allEffects(m))
+```
+
+```{r}
+m = lm(ampl_vert_y ~ ampl_vert_x * condition, data = dyad_means)
+summary(m)
+plot(allEffects(m))
+
+m = lm(ampl_hori_y ~ ampl_hori_x * condition, data = dyad_means)
+summary(m)
+plot(allEffects(m))
+
+m = lm(size_y ~ size_x * condition, data = dyad_means)
+summary(m)
+plot(allEffects(m))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#OLD OLD STUFF
+```{r}
+
+```
+##import annotations
+```{r}
+FC_elan_dir <- "C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/00_data/FC_dutch/elan/"
+#list all the files in the elan directory
+FC_elan_files <- list.files(FC_elan_dir, pattern = ".eaf$")
+#read into table where every row corresponds to an annotation
+FC_all_ann <- efileAnnotations(paste0(FC_elan_dir, FC_elan_files))
+FC_all_ann_ANN <- subset(FC_all_ann, atype == "ANN")
+```
+##transform speech data
+```{r}
+FC_speech <- FC_all_ann_ANN %>%
+  filter(grepl("(A|B|C)$", TIER_ID)) %>%
+  mutate(ID_group = as.character(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_participant = paste0(ID_group, "_", substring(TIER_ID, 0, 1)),
+         ID_partner = paste0(ID_group, "_",
+                             if_else(grepl("ab.eaf", filename) & grepl("A", ID_participant), "B", ""), 
+                             if_else(grepl("ab.eaf", filename) & grepl("B", ID_participant), "A", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("B", ID_participant), "C", ""),
+                             if_else(grepl("cb.eaf", filename) & grepl("C", ID_participant), "B", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("A", ID_participant), "C", ""),
+                             if_else(grepl("ca.eaf", filename) & grepl("C", ID_participant), "A", "")),
+         ID_dyad = as.character(toupper(str_extract_all(filename, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]_[a-c][a-c]")))) %>%
+  select(t0, t1, VALUE, ID_participant, ID_partner, ID_dyad) %>%
+  mutate(IP_ID = paste(ID_participant, ID_partner, t0, t1, sep = ("_")),
+         clarity = if_else(grepl("(\\@|\\(.*\\))", VALUE, perl=T), "unclear", "ok"), #unclear if laughter or not transcribed
+         speech_clean = gsub("(\\@|\\(.*\\))", "\\1", VALUE, perl=T),
+         speech_clean = gsub("@", "\\1", VALUE, perl=T),#delete laughter/meta-descriptions/unclear words) 
+         speech_clean = gsub("euhm *", "\\1", speech_clean), #replace euhm for syllable count as 1
+         word_count = lengths(strsplit(speech_clean, "\\W+"))) %>%
+  arrange(ID_dyad, t0)
+```
+##example data
+```{r}
+load.event <- function(time_ms_rec, g_d, column)
+{
+  output <- character(length = length(time_ms_rec))
+  output <- NA
+  for(i in g_d[,1])
+  {
+    output <- ifelse((time_ms_rec >= i & time_ms_rec <= g_d[,2][g_d[,1] == i]), as.character(g_d[,column][g_d[,1]==i]), output)
+  }
+  return(output) #provides a vector with the length of the time series with annotations
+}
+
+library(crqa)
+
+i = "0510_1700_CB"
+rec_l <- data.frame()
+for (i in unique(FC_speech$ID_dyad)) {
+  print(i)
+  speech <- subset(FC_speech, ID_dyad == i)
+  ts <- data.frame("msec" = round(seq(20, 540000, by=20)))
+  ts$transcr <- load.event(ts1$msec, speech, 3)
+  ts$value <- ifelse(is.na(ts$transcr), 0, 1)
+  value <- as.integer(ts$value)[0:3000]
+  
+  # set the Theiler window parameter for RQA (should be 1 to ignore LOI in RQA)
+  rec_tw_quantification = 1
+  # set radius to be very small for categorical matches
+  rec_categorical_radius = .0001
+  
+  r1 = crqa(value, value,delay=0,embed=1,rescale=0,radius=rec_categorical_radius,
+            normalize=0, mindiagline=2,minvertline=2,tw=rec_tw_plot)
+  output <- data.frame("l" = r1$L,
+                       "entr" = r1$ENTR,
+                       "dyad" = i)
+  
+  rec_l <- rbind.data.frame(rec_l, output)
+}
+
+write_tsv(rec_l, "test_rqa.tsv")
+
+test <- rec_l %>%
+  rename("ID_dyad" = dyad) %>%
+  inner_join(dyad_verbal)
+m = lm(l ~ condition*liking_prod, data = test)
+summary(m)
+plot(allEffects(m))
+
+```
+#crqa
+```{r}
+library(crqa)
+
+# set the Theiler window parameter for RQA (should be 1 to ignore LOI in RQA)
+rec_tw_quantification = 1
+
+# set radius to be very small for categorical matches
+rec_categorical_radius = .0001
+
+######## 3b. Run recurrence quantification analysis ########
+
+test1 = ts1 %>%
+  .$speech
+test2 = ts2  %>%
+  .$speech
+
+test1 <- as.integer(test1[0:1000])
+test2 <- as.integer(test2[0:1000])
+
+rec_tw_plot = 0
+par = list(unit = 2, 
+           labelx = "Letter", 
+           labely = "Letter", 
+           cols = "purple", 
+           pcex = 1)
+
+# run rqa over informative with a Theiler window of 0 for plotting
+r1 = crqa(test1, test1,
+                                            delay=0,
+                                            embed=1,
+                                            rescale=0,
+                                            radius=rec_categorical_radius,
+                                            normalize=0,
+                                            mindiagline=2,
+                                            minvertline=2,
+                                            tw=rec_tw_plot)
+
+plotRP(r1$RP, par)
+
+r1$RR # rate of recurrence
+r1$DET # % determinism
+r1$NRLINE # total number of lines on the plot
+r1$maxL # maximum line length on plot
+r1$L # average line length on plot
+r1$ENTR # entropy
+r1$rENTR # normalized entropy
+r1$LAM # laminarity
+r1$TT # trapping time
+```
+
+
+
+#CRQA new
+##lemmatize
+```{r}
+split_utterances <- function(utterances_df) {
+  words <- unlist(strsplit(utterances_df$speech_clean, "\\s+"))
+  participants <- rep(utterances_df$ID_participant, sapply(strsplit(utterances_df$speech_clean, "\\s+"), length))
+  partners <- rep(utterances_df$ID_partner, sapply(strsplit(utterances_df$speech_clean, "\\s+"), length))
+  data.frame(word = words, ID_participant = participants, ID_partner = partners)
+}
+#write a tsv file with one word per row to lemmatize with spacy (Python)
+word_df <- split_utterances(read_tsv("FC_speech.tsv")) %>%
+  filter(!grepl("^$", word) & !is.na(word))
+write_tsv(word_df, "input_spacy.tsv")
+```
+##run RQA
+Some info on the RQA parameters:
+Theiler window parameter (tw), which is used to specify the diagonal lines of the recurrence plot to be ignored, with 1 indexing the main diagonal. This parameter is particularly useful when autorecurrence is computed, as there can be autocorrelation structure of the time series with itself around the main diagonal (e.g., slow-moving continuous time series). However, the tw parameter should be set to 0 in CRQ, as two time series are different and they are especially synced along the main diagonal (i.e., the LOC). (Coco and Dale 2014, p.9-10)
+```{r message=FALSE, warning=FALSE}
+#add dyad info to output
+output_spacy <- read_tsv("output_spacy.tsv") %>%
+  filter(!is.na(word)) %>%
+  mutate(ID_auto = paste0(ID_participant, ID_partner),
+         ID_group = as.character(str_extract_all(ID_participant, pattern="[0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9]")),
+         ID_dyad = paste0(ID_group, "_",
+                             if_else(grepl("A", ID_participant) & grepl("B", ID_partner), "AB", ""), 
+                             if_else(grepl("A", ID_participant) & grepl("C", ID_partner), "CA", ""),
+                             if_else(grepl("B", ID_participant) & grepl("C", ID_partner), "CB", ""),
+                             if_else(grepl("B", ID_participant) & grepl("A", ID_partner), "AB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("B", ID_partner), "CB", ""),
+                             if_else(grepl("C", ID_participant) & grepl("A", ID_partner), "CA", "")),
+         ID_letter =  paste0(if_else(grepl("A", ID_participant), "A", "")),
+         ID_letter =  paste0(if_else(grepl("B", ID_participant), "B", ID_letter)),
+         ID_letter =  paste0(if_else(grepl("C", ID_participant), "C", ID_letter)))
+
+#define function words
+pattern_function <- "\\b(ik|mij|me|mijn|jij|jou|je|ge|jouw|uw|hij|hem|hem|zijn|zij|haar|haar|haar|het|er|zijn|wij|ons|we|onze|ons|ons|jullie|jullie|jullie|jullie|uw|zij|hen|ze|hun|de|het|een|dit|deze|dat|die|mijn|jouw|u|zijn|haar|ons|onze|jullie|uw|hun|die|dat|wie|wat|wie|wat|waar|wanneer|waarom|hoe|en|of|maar|want|als|dan|hoewel|omdat|aan|bij|in|op|met|van|naar|door|voor|ben|bent|is|zijn|word|wordt|wordt|worden|worden|worden|heb|hebt|heeft|hebben|hebben|hebben|kan|kunt|kan|kunnen|kunnen|kunnen|moet|moet|moet|moeten|moeten|moeten|zal|zult|zal|zullen|zullen|zullen|mag|mag|mag|mogen|mogen|mogen|wil|wilt|wil|willen|willen|willen)\\b"
+
+rqa_auto <- data.frame()
+rqa_cross <- data.frame()
+rqa_part <- data.frame()
+drp_auto <- data.frame()
+drp_cross <- data.frame()
+drp_part <- data.frame()
+for (i in unique(output_spacy$ID_group)) {
+  print(i)
+  output_group <- subset(output_spacy, ID_group == i)
+  for (j in unique(output_group$ID_dyad)) {
+    output_dyad <- subset(output_group, ID_dyad == j)
+    p1 =  unique(output_dyad$ID_participant)[1]
+    p2 =  unique(output_dyad$ID_participant)[2]
+    # specify the window size (from negative win_size to 0 to positive win_size)
+    win_size = 200
+    
+    ts_auto <- output_dyad %>%
+      mutate(l = as.numeric(as.factor(Lemma))) %>%
+      filter(!grepl(pattern_function, Lemma)) %>% select(l)
+    ts_auto <- ts_auto$l
+    
+    ts_cross <- output_dyad %>%
+      mutate(l1 = if_else(!grepl(pattern_function, Lemma) & ID_participant == p1, as.numeric(as.factor(Lemma)), 1000),
+             l2 = if_else(!grepl(pattern_function, Lemma) & ID_participant == p2, as.numeric(as.factor(Lemma)), 10000)) %>%
+      select(l1, l2)
+    
+    ts_l1 <- ts_cross %>% filter(l1 != 1000) %>% select(l1)
+    ts_l1 <- ts_l1$l1
+    ts_l2 <- ts_cross %>% filter(l2 != 10000) %>% select(l2)
+    ts_l2 <- ts_l2$l2
+    
+    rec_auto = crqa(ts_auto, ts_auto, delay=0,embed=1,rescale=0,radius=0.0001, normalize=0, mindiagline=2,minvertline=2,tw=1)
+    result_auto = data.frame(rec_auto[1:9]) %>% mutate(ID_dyad = j)
+    rqa_auto <- rbind.data.frame(rqa_auto, result_auto)
+    rec_auto_plot = data.frame(points = rec_auto$RP@i, loc = seq_along(rec_auto$RP@i))
+    ggplot(rec_auto_plot,aes(x=points, y=loc)) +
+      geom_point(color="black",size=1) +
+      theme_classic() +
+      theme(aspect.ratio=1) +
+      theme(legend.position="none", axis.text.x = element_blank(), axis.text.y = element_blank()) +
+      ylab("Cumulative word count") + xlab("Cumulative word count") +
+      ggtitle("Recurrence of content words")
+    ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/auto_dyad/", j, ".png"))
+    
+    drp = drpfromts(ts_auto, ts_auto,
+                         datatype="categorical",
+                         windowsize = win_size,
+                         delay=0,
+                         embed=1,
+                         rescale=0,
+                         radius=0.0001,
+                         normalize=0,
+                         mindiagline=2,
+                         minvertline=2,
+                         tw=1)
+    drp_auto_j <- data.frame("lag" = -win_size:win_size, drp$profile, "ID_dyad" = j)
+    drp_auto <- rbind.data.frame(drp_auto, drp_auto_j)
+    
+    rec_cross= crqa(ts_cross$l1, ts_cross$l2, delay=0,embed=1,rescale=0,radius=0.0001, normalize=0, mindiagline=2,minvertline=2,tw=0)
+    result_cross = data.frame(rec_cross[1:9]) %>% mutate(ID_dyad = j)
+    rqa_cross <- rbind.data.frame(rqa_cross, result_cross)
+    rec_cross_plot = data.frame(points = rec_cross$RP@i, loc = seq_along(rec_cross$RP@i))
+    ggplot(rec_cross_plot,aes(x=points, y=loc)) +
+      geom_point(color="black",size=1) +
+      theme_classic() +
+      theme(aspect.ratio=1) +
+      theme(legend.position="none", axis.text.x = element_blank(), axis.text.y = element_blank()) +
+      ylab("Cumulative word count") + xlab("Cumulative word count") +
+      ggtitle("Recurrence of content words")
+    ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/auto_cross/", j, ".png"))
+    
+    drp = drpfromts(ts_cross$l1, ts_cross$l2,
+                         datatype="categorical",
+                         windowsize = win_size,
+                         delay=0,
+                         embed=1,
+                         rescale=0,
+                         radius=0.0001,
+                         normalize=0,
+                         mindiagline=2,
+                         minvertline=2,
+                         tw=0)
+    drp_cross_j <- data.frame("lag" = -win_size:win_size, drp$profile, "ID_dyad" = j)
+    drp_cross <- rbind.data.frame(drp_cross, drp_cross_j)
+    
+    
+    rec_part_l1 = crqa(ts_l1, ts_l1, delay=0,embed=1,rescale=0,radius=0.0001, normalize=0, mindiagline=2,minvertline=2,tw=1)
+    result_part = data.frame(rec_part_l1[1:9]) %>% mutate(ID_dyad = j, ID_participant = p1)
+    rec_part_l2 = crqa(ts_l2, ts_l2, delay=0,embed=1,rescale=0,radius=0.0001, normalize=0, mindiagline=2,minvertline=2,tw=1)
+    result_part = result_part %>% bind_rows(data.frame(rec_part_l2[1:9]) %>% mutate(ID_dyad = j, ID_participant = p2))
+    rqa_part <- rbind.data.frame(rqa_part, result_part)
+    
+    rec_part_plot_l1 = data.frame(points = rec_part_l1$RP@i, loc = seq_along(rec_part_l1$RP@i))
+    ggplot(rec_part_plot_l1,aes(x=points, y=loc)) +
+      geom_point(color="black",size=1) +
+      theme_classic() +
+      theme(aspect.ratio=1) +
+      theme(legend.position="none", axis.text.x = element_blank(), axis.text.y = element_blank()) +
+      ylab("Cumulative word count") + xlab("Cumulative word count") +
+      ggtitle("Recurrence of content words")
+    ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/auto_participant/", p1, "_", j, ".png"))
+    
+    rec_part_plot_l2 = data.frame(points = rec_part_l2$RP@i, loc = seq_along(rec_part_l2$RP@i))
+    ggplot(rec_part_plot_l2,aes(x=points, y=loc)) +
+      geom_point(color="black",size=1) +
+      theme_classic() +
+      theme(aspect.ratio=1) +
+      theme(legend.position="none", axis.text.x = element_blank(), axis.text.y = element_blank()) +
+      ylab("Cumulative word count") + xlab("Cumulative word count") +
+      ggtitle("Recurrence of content words")
+    ggsave(paste0("C:/Users/u0113737/OneDrive - KU Leuven/00_doctoraat/04_copying/plots/auto_participant/", p2, "_", j, ".png"))
+    
+    drp = drpfromts(ts_l1, ts_l1,
+                         datatype="categorical",
+                         windowsize = win_size,
+                         delay=0,
+                         embed=1,
+                         rescale=0,
+                         radius=0.0001,
+                         normalize=0,
+                         mindiagline=2,
+                         minvertline=2,
+                         tw=1)
+    win_adapt = (length(drp$profile)-1)/2
+    drp_part_j <- data.frame("lag" = -win_adapt:win_adapt, drp$profile, "ID_participant" = p1, "ID_dyad" = j)
+    drp = drpfromts(ts_l2, ts_l2,
+                         datatype="categorical",
+                         windowsize = win_size,
+                         delay=0,
+                         embed=1,
+                         rescale=0,
+                         radius=0.0001,
+                         normalize=0,
+                         mindiagline=2,
+                         minvertline=2,
+                         tw=1)
+    win_adapt = (length(drp$profile)-1)/2
+    drp_part_j <- drp_part_j %>% bind_rows(data.frame(-win_adapt:win_adapt, drp$profile, "ID_participant" = p2, "ID_dyad" = j))
+    drp_part <- rbind.data.frame(drp_part, drp_part_j)
+  }
+}
+```
+
+```{r}
+ggplot(drp_auto, aes(y = drp.profile, 
+      x = lag, color = ID_dyad))+
+  geom_line(size = 0.6, alpha = 0.3)+
+  #facet_wrap(~condition)+
+  stat_summary(fun=mean, colour="black", geom="line", size = 1)+
+  theme_bw()+
+  xlim(-100, 100) +
+  theme(legend.position = "none") +
+  ggtitle("Diagonal Recurrence Profile (auto)")
+ggsave("drp_auto.png")
+
+ggplot(drp_cross, aes(y = drp.profile, 
+      x = lag, color = ID_dyad))+
+  geom_line(size = 0.6, alpha = 0.3)+
+  #facet_wrap(~condition)+
+  stat_summary(fun=mean, colour="black", geom="line", size = 1)+
+  theme_bw()+
+  xlim(-100, 100) +
+  theme(legend.position = "none") +
+  ggtitle("Diagonal Recurrence Profile (cross)")
+ggsave("drp_cross.png")
+
+drp_part$ID_paste <- paste0(drp_part$ID_participant, drp_part$ID_participant)
+ggplot(drp_part, aes(y = drp.profile, 
+      x = lag, color = ID_paste))+
+  geom_line(size = 0.6, alpha = 0.3)+
+  #facet_wrap(~condition)+
+  stat_summary(fun=mean, colour="black", geom="line", size = 1)+
+  theme_bw()+
+  xlim(-100, 100) +
+  theme(legend.position = "none") +
+  ggtitle("Diagonal Recurrence Profile (part)")
+ggsave("drp_part.png")
+```
+```{r}
+info <- read_tsv(paste0(data_ch3, "FC_multimod_summary.tsv")) %>%
+              mutate(condition = fct_recode(as.factor(condition), "L2-L1" = "L1-L2")) %>%
+                       select(ID_dyad, condition) %>% distinct()
+rqa_auto <- rqa_auto %>%
+  left_join(info)
+rqa_cross<- rqa_cross %>%
+  left_join(info)
+
+info_3 <- read_tsv(paste0(data_ch3, "FC_multimod_summary.tsv")) %>%
+                       select(ID_dyad, ID_participant, condition) %>% distinct()
+
+rqa_part <- rqa_part %>%
+  left_join(info_3)
+
+write_tsv(rqa_auto, "rqa_auto.tsv")
+write_tsv(rqa_cross, "rqa_cross.tsv")
+write_tsv(rqa_part, "rqa_part.tsv")
+
+rqa_auto <- read_tsv("rqa_auto.tsv")
+rqa_cross <- read_tsv("rqa_cross.tsv")
+rqa_part <- read_tsv("rqa_part.tsv")
+```
+###models
+```{r}
+rqa_auto %>%
+  group_by(condition) %>%
+  reframe(mean_DET = mean(DET))
+rqa_cross %>%
+  group_by(condition) %>%
+  reframe(mean_DET = mean(DET))
+rqa_part %>%
+  group_by(condition) %>%
+  reframe(mean_DET = mean(DET))
+
+m = lm(RR ~ condition, data = rqa_auto)
+summary(m)
+plot(allEffects(m))
+```

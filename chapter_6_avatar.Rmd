@@ -1,0 +1,264 @@
+---
+title: "Avatar comprehension"
+author: "Valentijn Prové"
+date: "20-10-2023"
+output: html_document
+---
+```{r load packages, include=FALSE}
+library(readbulk)
+library(tidyverse)
+library(lme4)
+library(stringr)
+library(ggbeeswarm)
+library(lme4)
+library(effects)
+```
+
+```{r directories and files}
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+basefolder <- paste0(dirname(rstudioapi::getSourceEditorContext()$path), "/")
+openlab <- paste0(dirname(rstudioapi::getSourceEditorContext()$path), "/openlab_csv/")
+openlab_files <- list.files(openlab, recursive = T)
+```
+
+```{r LexTale scores}
+mails <- readLines(paste0(basefolder, "lextale_mails.txt"), encoding = "latin1")
+
+lt <- data.frame(body = character(),
+                 stringsAsFactors = FALSE)
+
+# Loop through the sample string and populate the data frame
+for (i in seq(1, length(mails), by = 6)) {
+  lt <- rbind(lt, data.frame(
+    body = mails[i + 5]
+  ))
+}
+
+# Reset row names
+rownames(lt) <- NULL
+#extract scores
+lt$LexTale_score <- str_extract(lt$body, "(\\d+(\\.\\d+)?) %")
+lt$LexTale_score <- as.numeric(gsub(" %", "\\1", lt$LexTale_score))
+lt$code <- lt$body
+lt$code <- gsub(".*m, (.+) participated.*", "\\1", lt$code)
+lt <- distinct(lt)
+lt$group <- lt$body
+lt$group[grep("November 27", lt$group)] <- "luik1"
+lt$group[grep("November 28.*am,", lt$group)] <- "luik2"
+lt$group[grep("November 28.*pm,", lt$group)] <- "leuven1"
+lt$group[grep("November 29", lt$group)] <- "leuven2"
+lt$group[grep("December 4", lt$group)] <- "leuven3"
+lt$group[grep("November 30.*am,", lt$group)] <- "lln1"
+lt$group[grep("November 30.*pm,", lt$group)] <- "lln2"
+
+scores_ilt <- read.csv("lextale_ilt.csv") %>%
+  select(-X) %>%
+  mutate(group = "ilt")
+
+lextale<- lt %>%
+  select(code, LexTale_score, group) %>%
+  bind_rows(scores_ilt) %>%
+  mutate(language = as.factor(group))
+
+levels(lextale$language) <- c("L2_ilt", "L1", "L1", "L1", "L2", "L2", "L2", "L2")
+
+lextale_means <- lextale %>%
+  group_by(language) %>%
+  summarise(mean = mean(LexTale_score, na.rm = T),
+            sd = sd(LexTale_score, na.rm = T),
+            min = min(LexTale_score, na.rm = T),
+            max = max(LexTale_score, na.rm = T),
+            n = n())
+
+scores_ilt <- NULL
+lt <- NULL
+```
+
+```{r OpenLab answers}
+participants <- data.frame()
+answers <- data.frame()
+for (i in openlab_files) {
+  file <- read.csv(paste0(openlab, i))
+  
+  file_part <- file %>%
+    reframe(order = Order[sender == "ID"],
+            age = age[sender == "age-gender"],
+            gender = gender[sender == "age-gender"],
+            code = unique(code)) %>%
+    mutate(group = gsub("/.*", "\\1", i))
+  participants <- rbind.data.frame(participants, file_part)
+  
+  file_stim <- file %>%
+    filter(ended_on == "form submission" & grepl("image", sender) & !grepl("try-out", sender)) %>%
+    reframe(stimulus = str_replace_all(sender, c("-image" = "", "-" = ".")))
+  
+  file_stim <- data.frame(stimulus = c(paste(file_stim$stimulus, "L2", sep="_"), paste(file_stim$stimulus, "L1", sep="_")))
+    
+  file_ans <- file %>%
+    filter(grepl("image", sender) & !grepl("try-out", sender)) %>%
+    select(code, contains("answer")) %>%
+    pivot_longer(!code, names_to = "stimulus", values_to = "answer") %>%
+    filter(answer != "", !is.na(answer)) %>%
+    mutate(stimulus = gsub("_answer", "\\1", stimulus))
+  
+  file_ans <- merge(file_ans, file_stim, by = "stimulus", all.y = T ) %>%
+    mutate(script = str_extract(stimulus, "[a-z]*[1-2]"),
+           #condition = str_extract(stimulus, "(nogest|beat|small|large)"),
+           answer_language = str_extract(stimulus, "L[1-2]"),
+           code = unique(file$code),
+           group = gsub("/.*", "\\1", i))
+  
+  file_ans$order <- file_part$order
+  file_ans$age <- file_part$age
+  file_ans$gender <- file_part$gender
+  
+  answers <- rbind.data.frame(answers, file_ans)
+  
+  file <- NULL
+  file_part <- NULL
+  file_stim <- NULL
+  file_ans <- NULL
+}
+
+answers$condition <- as.factor(answers$script)
+A <- answers[answers$order == 1,]
+B <- answers[answers$order == 2,]
+C <- answers[answers$order == 3,]
+D <- answers[answers$order == 4,]
+levels(A$condition) <- c("nogest", "large", "small", "beat", "small", "large", "beat", "nogest")
+levels(B$condition) <- c("beat", "nogest", "large", "small", "large", "nogest", "small", "beat")
+levels(C$condition) <- c("small", "beat", "nogest", "large", "nogest", "beat", "large", "small")
+levels(D$condition) <- c("large", "small", "beat", "nogest", "beat", "small", "nogest", "large")
+
+answers <- rbind.data.frame(A, B, C, D) %>%
+  select(-stimulus, -script, script, -answer, answer)
+```
+
+```{r rate answers}
+write.csv(answers, "answers_to_rate_20-12-2023.csv")
+answers_rated <- read.csv("answers_to_rate_20-12-2023_rated.csv") %>%
+  select(-X)
+pa_rated <- answers_rated
+```
+
+```{r inspect participants}
+participants$group_lang <- as.factor(participants$group)
+levels(participants$group_lang) <- c("ILT", "L1", "L1", "L1", "L2", "L2", "L2", "L2")
+participants %>%
+  group_by(group_lang) %>%
+  reframe(age_mean = mean(age),
+          age_sd = sd(age))
+```
+
+
+```{r inspect LexTALE scores}
+table(participants$gender)
+summary(participants$age)
+
+lextale$group_lang <- as.factor(lextale$group)
+levels(lextale$group_lang) <- c("ILT", "L1", "L1", "L1", "L2", "L2", "L2", "L2")
+
+lextale %>%
+  group_by(group_lang) %>%
+  reframe(score_mean = mean(LexTale_score, na.rm = T),
+          score_sd = sd(LexTale_score, na.rm = T))
+
+ggplot(lextale, aes(x=group_lang, y=LexTale_score, fill = group_lang)) +
+  geom_boxplot(show.legend = FALSE) +
+  stat_summary(fun.y=mean, geom="point", shape=4, size=5, stroke = 2, color="white", fill="white") +
+  geom_hline(yintercept=60, linetype="dashed") +
+  geom_text(aes(0.5,62,label = "B2")) +
+  geom_hline(yintercept=80, linetype="dashed") +
+  geom_text(aes(0.5,82,label = "C1")) +
+  scale_x_discrete(limits = c("ILT", "L2", "L1"), labels=c("ILT" = "L2 (lower)", "L2" = "L2 (higher)", "L1" = "L1"), ) +
+  scale_fill_manual(values = c("#1984c5", "#e6d800", "#76c68f")) +
+  theme(legend.position = "none") +
+  ggtitle("Estimated vocabulary size") +
+  xlab("Group") +
+  ylab("LexTALE (score)") +
+  theme_bw(base_size = 18)
+
+ggsave("lextale.png", dpi=300, width = 6, height = 6)
+```
+
+```{r inspect taks difficulty}
+pa_rated$group_lang <- as.factor(pa_rated$group)
+levels(pa_rated$group_lang) <- c("ILT", "L1", "L1", "L1", "L2", "L2", "L2", "L2")
+
+pa_rated_L2 <- pa_rated %>%
+  filter(answer_language == "L2") %>%
+  mutate(condition = fct_relevel(condition, "nogest", "beat", "small", "large"))
+
+pa_summary <- pa_rated_L2 %>%
+  group_by(group_lang, condition) %>%
+  summarise(mean = mean(rating),
+            sd = sd(rating))
+
+pa_summary_group <- pa_rated_L2 %>%
+  group_by(code, age, group_lang) %>%
+  summarise(correct_pp = sum(rating)) %>%
+  group_by(group_lang) %>%
+  summarise(`0` = length(group_lang[correct_pp == 0]),
+            `1` = length(group_lang[correct_pp == 1]),
+            `2` = length(group_lang[correct_pp == 2]),
+            `3` = length(group_lang[correct_pp == 3]),
+            `4` = length(group_lang[correct_pp == 4]),
+            `5` = length(group_lang[correct_pp == 5]),
+            `6` = length(group_lang[correct_pp == 6]),
+            `7` = length(group_lang[correct_pp == 7]),
+            `8` = length(group_lang[correct_pp == 8])) %>%
+  pivot_longer(!group_lang, names_to = "n_correct", values_to = "count") %>%
+  group_by(group_lang) %>%
+  mutate(percent = count/sum(count))
+
+ggplot(pa_summary_group, aes(n_correct, percent, fill=group_lang)) +
+  geom_bar(stat = "identity", position="stack") +
+  ggtitle("Correct answers per participant") +
+  xlab("Number of correct answers") +
+  ylab("Percentage") +
+  scale_fill_manual(name = "Group", limits = c("ILT", "L2", "L1"),labels=c("ILT" = "L2 (lower)", "L2" = "L2 (higher)", "L1" = "L1"), values = c("#1984c5", "#76c68f", "#e6d800"), guide = guide_legend(reverse = TRUE) ) +
+  theme_bw(base_size = 18)
+
+ggsave("answers.png", dpi=300, width = 6, height = 6)
+#HIER KAN IK NOG DE SCRIPTS VERGELIJKEN OM TE ZIEN OM SOMMIGE MOEILIJKER WAREN DAN ANDERE? OF IS DAT MEER IETS VOOR DE RANDOM EFFECTS? HEB IK DEZE GRAFIEK WEL NODIG?
+```
+
+```{r plot results per condition}
+ggplot(pa_summary, aes(group_lang, mean, fill = condition)) +
+  geom_bar(stat = "identity", position=position_dodge()) +
+  theme_bw() +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) 
+
+test <- pa_rated_L2 %>%
+  mutate(participant = as.factor(ceiling(row_number()/8)))
+
+pa_rated_L2$task_score <- as.factor(pa_rated_L2$rating)
+m <- glmer(rating ~ condition*group_lang + (1|participant/script), family = binomial, data = test)
+summary(m)
+plot(allEffects(m))
+
+fixed <- do.call(rbind.data.frame, as.data.frame(allEffects(m))) #get fixed effects
+levels(fixed$condition) <- c("omitted", "PUOH", "reduced", "original", NA)
+ggplot(data = fixed, aes(x = condition, y = fit, color = group_lang, group = group_lang)) +
+  geom_point(position = position_dodge(width = 0.3), size=3) +
+  geom_line(position = position_dodge(width = 0.3)) + 
+  geom_errorbar(aes(x = condition, ymin = lower, ymax = upper),width=0.3,size=0.7,position = position_dodge(width = 0.3)) +
+  scale_color_manual(name = "Group", limits = c("ILT", "L2", "L1"),labels=c("ILT" = "L2 (lower)", "L2" = "L2 (higher)", "L1" = "L1"), values = c("#1984c5", "#76c68f", "#e6d800"), guide = guide_legend(reverse = TRUE) ) +
+  ggtitle("Logistic regression") +
+  xlab("Condition") +
+  ylab("Chance for correct answer") +
+  theme_bw(base_size = 18)
+ggsave("regression.png", dpi=300, width = 6, height = 6)
+```
+
+```{r}
+participants %>%
+  group_by(group) %>%
+  reframe(n = n())
+```
+
+
+```{r randoms, echo=TRUE}
+randoms <- ranef(m, condVar=TRUE); randoms #Get random effects
+```
